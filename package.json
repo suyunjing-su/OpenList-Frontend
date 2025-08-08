@@ -1,6 +1,7 @@
 {
   "name": "@openlist-frontend/openlist-frontend",
   "version": "4.1.0",
+  "type": "module",
   "author": {
     "name": "The OpenList Projects Contributors",
     "url": "https://github.com/OpenListTeam"
@@ -80,6 +81,7 @@
     "clsx": "^2.1.1",
     "copy-to-clipboard": "^3.3.3",
     "crypto-js": "^4.2.0",
+    "handlebars": "^4.7.8",
     "hash-wasm": "^4.12.0",
     "hls.js": "^1.6.5",
     "ini": "^5.0.0",

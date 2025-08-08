@@ -1,3 +1,5 @@
+import Handlebars from "handlebars"
+
 export const firstUpperCase = (str: string) => {
   if (!str || str.length === 0) {
     return ""
@@ -134,3 +136,43 @@ export const decodeText = (data: BufferSource, encoding?: string) => {
 //   const data = textEncoder.encode(text)
 //   return data
 // }
+
+Handlebars.registerHelper("dateLocaleString", (date: Date) => {
+  return new Date(date).toLocaleString()
+})
+
+Handlebars.registerHelper("add", (a: any, b: any) => {
+  return a + b
+})
+
+Handlebars.registerHelper("eq", (a: any, b: any) => {
+  return a === b
+})
+
+Handlebars.registerHelper("less", (a: any, b: any) => {
+  return a < b
+})
+
+Handlebars.registerHelper("and", (a: boolean, b: boolean) => {
+  return a && b
+})
+
+Handlebars.registerHelper("or", (a: boolean, b: boolean) => {
+  return a || b
+})
+
+Handlebars.registerHelper("not", (v: boolean) => {
+  return !v
+})
+
+Handlebars.registerHelper("filename", (path: string) => {
+  return path.indexOf("/") === -1 ? path : path.slice(path.lastIndexOf("/") + 1)
+})
+
+export const matchTemplate = (
+  templateStr: string,
+  data: { [key: string]: any },
+) => {
+  const template = Handlebars.compile(templateStr)
+  return template(data)
+}

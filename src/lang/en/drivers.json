@@ -726,6 +726,12 @@
     "url": "Url",
     "username": "Username"
   },
+  "OpenListShare": {
+    "forward_archive_requests": "Forward archive requests",
+    "pwd": "Share code",
+    "sid": "Share ID",
+    "url": "Url"
+  },
   "PikPak": {
     "captcha_token": "Captcha token",
     "device_id": "Device id",

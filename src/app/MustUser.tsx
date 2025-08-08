@@ -3,7 +3,7 @@ import { Error, FullScreenLoading } from "~/components"
 import { useFetch, useT } from "~/hooks"
 import { Me, setMe } from "~/store"
 import { PResp } from "~/types"
-import { r, handleResp } from "~/utils"
+import { r, handleResp, handleRespWithoutAuthAndNotify } from "~/utils"
 
 const MustUser = (props: { children: JSXElement }) => {
   const t = useT()
@@ -25,4 +25,32 @@ const MustUser = (props: { children: JSXElement }) => {
   )
 }
 
-export { MustUser }
+const UserOrGuest = (props: { children: JSXElement }) => {
+  const [loading, data] = useFetch((): PResp<Me> => r.get("/me"))
+  const [skipLogin, setSkipLogin] = createSignal(false)
+  ;(async () => {
+    handleRespWithoutAuthAndNotify(await data(), setMe, (_msg, _code) => {
+      setMe({
+        id: 2,
+        username: "guest",
+        password: "",
+        base_path: "/",
+        role: 1,
+        disabled: false,
+        permission: 0,
+        sso_id: "",
+        otp: false,
+      })
+      setSkipLogin(true)
+    })
+  })()
+  return (
+    <Switch fallback={props.children}>
+      <Match when={!skipLogin() && loading()}>
+        <FullScreenLoading />
+      </Match>
+    </Switch>
+  )
+}
+
+export { MustUser, UserOrGuest }
