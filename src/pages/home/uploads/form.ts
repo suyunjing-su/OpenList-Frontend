@@ -3,6 +3,7 @@ import { EmptyResp } from "~/types"
 import { r } from "~/utils"
 import { SetUpload, Upload } from "./types"
 import { calculateHash } from "./util"
+import { sliceupload } from "./slice_upload"
 export const FormUpload: Upload = async (
   uploadPath: string,
   file: File,
@@ -10,7 +11,12 @@ export const FormUpload: Upload = async (
   asTask = false,
   overwrite = false,
   rapid = false,
+  sliceup = false,
 ): Promise<Error | undefined> => {
+  if (sliceup) {
+    return sliceupload(uploadPath, file, setUpload, overwrite, asTask)
+  }
+
   let oldTimestamp = new Date().valueOf()
   let oldLoaded = 0
   const form = new FormData()

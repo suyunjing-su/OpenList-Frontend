@@ -23,4 +23,12 @@ export type Upload = (
   asTask: boolean,
   overwrite: boolean,
   rapid: boolean,
+  sliceup: boolean,
 ) => Promise<Error | undefined>
+
+export type HashInfo = {
+  md5: string
+  md5_256kb: string
+  sha1: string
+  sha256: string
+}

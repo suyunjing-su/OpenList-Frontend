@@ -78,6 +78,7 @@ const Upload = () => {
   const [uploading, setUploading] = createSignal(false)
   const [asTask, setAsTask] = createSignal(false)
   const [overwrite, setOverwrite] = createSignal(false)
+  const [sliceup, setSliceup] = createSignal(false)
   const [rapid, setRapid] = createSignal(true)
   const [uploadFiles, setUploadFiles] = createStore<{
     uploads: UploadFileProps[]
@@ -122,6 +123,7 @@ const Upload = () => {
         asTask(),
         overwrite(),
         rapid(),
+        sliceup(),
       )
       if (!err) {
         setUpload(path, "status", "success")
@@ -304,6 +306,15 @@ const Upload = () => {
               >
                 {t("home.upload.add_as_task")}
               </Checkbox>
+              <Checkbox
+                checked={sliceup()}
+                onChange={() => {
+                  setSliceup(!sliceup())
+                }}
+              >
+                {t("home.upload.slice_upload")}
+              </Checkbox>
+
               <Checkbox
                 checked={overwrite()}
                 onChange={() => {
