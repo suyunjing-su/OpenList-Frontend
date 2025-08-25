@@ -1,6 +1,6 @@
 import { password } from "~/store"
 import { EmptyResp } from "~/types"
-import { r, pathDir, log } from "~/utils"
+import { r, pathDir } from "~/utils"
 import { SetUpload, Upload } from "./types"
 import pLimit from "p-limit"
 import {
@@ -103,7 +103,6 @@ export const sliceupload = async (
         Password: password(),
       },
       onUploadProgress: async (progressEvent) => {
-        log()
         if (!progressEvent.lengthComputable) {
           return
         }
@@ -111,7 +110,6 @@ export const sliceupload = async (
         const release = await progressMutex.acquire()
         try {
           const sliceuploaded = progressEvent.loaded - oldLoaded
-          log("progress event trigger", idx, sliceuploaded, Date.now())
           uploadedBytes += sliceuploaded
           oldLoaded = progressEvent.loaded
         } finally {
