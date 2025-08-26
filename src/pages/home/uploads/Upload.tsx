@@ -126,7 +126,7 @@ const Upload = () => {
         sliceup(),
       )
       if (!err) {
-        setUpload(path, "status", "success")
+        setUpload(path, "status", asTask() ? "tasked" : "success")
         setUpload(path, "progress", 100)
       } else {
         setUpload(path, "status", "error")

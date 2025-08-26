@@ -141,7 +141,7 @@ export const sliceupload = async (
     setUpload("progress", complete)
     lastTimestamp = Date.now()
     lastUploadedBytes = uploadedBytes
-  }, 1000) // 更高频更新
+  }, 1000)
 
   // 开始计时
   lastTimestamp = Date.now()
@@ -199,33 +199,26 @@ export const sliceupload = async (
     }
   }
   await Promise.all(tasks)
-  completeFlag = true
 
   // 最终处理上传结果
   if (errors.length > 0) {
-    setUpload("status", "error")
-    setUpload("speed", 0)
     setUpload(
       "progress",
       Math.min(100, ((uploadedBytes / totalSize) * 100) | 0),
     )
     return errors[0]
   } else {
+    if (!asTask) {
+      setUpload("status", "backending")
+    }
     const resp = await FsSliceupComplete(dir, resp1.data.upload_id)
+    completeFlag = true
     if (resp.code != 200) {
-      setUpload("status", "error")
       return new Error(resp.message)
     } else if (resp.data.complete == 0) {
-      setUpload("status", "error")
       return new Error("slice missing, please reupload")
-    } else if (resp.data.complete == 2) {
-      //后台或任务上传中
-      setUpload("status", "backending")
-      return
     }
-    setUpload("progress", 100)
-    setUpload("status", "success")
-    setUpload("speed", 0)
+    //状态处理交给上层
     return
   }
 }
