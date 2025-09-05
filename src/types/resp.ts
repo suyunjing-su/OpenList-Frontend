@@ -42,7 +42,7 @@ export type FsGetResp = Resp<
 >
 
 export type FsPreupResp = Resp<{
-  upload_id: number
+  task_id: string
   slice_size: number
   slice_cnt: number
   slice_upload_status: string
@@ -56,7 +56,7 @@ export type FsUpinfoResp = Resp<{
 }>
 
 export type FsSliceupCompleteResp = Resp<{
-  upload_id: number
+  task_id: string
   slice_upload_status: string
   complete: number
 }>

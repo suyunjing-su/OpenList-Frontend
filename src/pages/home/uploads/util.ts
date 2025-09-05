@@ -88,12 +88,12 @@ export const fsPreup = async (
 
 export const FsSliceupComplete = async (
   path: string,
-  upload_id: number,
+  task_id: string,
 ): Promise<FsSliceupCompleteResp> => {
   return r.post(
     "/fs/slice_upload_complete",
     {
-      upload_id,
+      task_id,
     },
     {
       headers: {

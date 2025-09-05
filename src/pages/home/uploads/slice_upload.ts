@@ -32,7 +32,7 @@ export const sliceupload = async (
   //获取上传需要的信息
   const resp = await fsUploadInfo(dir)
   if (resp.code != 200) {
-    return new Error(resp.message)
+    return new Error(`Upload info failed: ${resp.code} - ${resp.message}`)
   }
 
   // hash计算
@@ -58,7 +58,7 @@ export const sliceupload = async (
     asTask,
   )
   if (resp1.code != 200) {
-    return new Error(resp1.message)
+    return new Error(`Preup failed: ${resp1.code} - ${resp1.message}`)
   }
   if (resp1.data.reuse) {
     setUpload("progress", "100")
@@ -85,10 +85,10 @@ export const sliceupload = async (
     chunk: Blob,
     idx: number,
     slice_hash: string,
-    upload_id: number,
+    task_id: string,
   ) => {
     const formData = new FormData()
-    formData.append("upload_id", upload_id.toString())
+    formData.append("task_id", task_id)
     formData.append("slice_hash", slice_hash)
     formData.append("slice_num", idx.toString())
     formData.append("slice", chunk)
@@ -102,7 +102,7 @@ export const sliceupload = async (
         "Content-Type": "multipart/form-data",
         Password: password(),
       },
-      onUploadProgress: async (progressEvent) => {
+      onUploadProgress: async (progressEvent: any) => {
         if (!progressEvent.lengthComputable) {
           return
         }
@@ -154,7 +154,7 @@ export const sliceupload = async (
         chunk,
         0,
         slicehash.length == 0 ? "" : slicehash.join(","),
-        resp1.data.upload_id,
+        resp1.data.task_id,
       )
     } catch (err) {
       completeFlag = true
@@ -184,7 +184,7 @@ export const sliceupload = async (
               chunk,
               i,
               slicehash.length == 0 ? "" : slicehash[i],
-              resp1.data.upload_id,
+              resp1.data.task_id,
             )
           } catch (err) {
             errors.push(err as Error)
@@ -211,10 +211,10 @@ export const sliceupload = async (
     if (!asTask) {
       setUpload("status", "backending")
     }
-    const resp = await FsSliceupComplete(dir, resp1.data.upload_id)
+    const resp = await FsSliceupComplete(dir, resp1.data.task_id)
     completeFlag = true
     if (resp.code != 200) {
-      return new Error(resp.message)
+      return new Error(`Upload complete failed: ${resp.code} - ${resp.message}`)
     } else if (resp.data.complete == 0) {
       return new Error("slice missing, please reupload")
     }
