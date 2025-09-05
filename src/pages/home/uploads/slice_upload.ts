@@ -15,13 +15,16 @@ import createMutex from "~/utils/mutex"
 
 // 重试配置
 const RETRY_CONFIG = {
-  maxRetries: 5, // 增加重试次数
+  maxRetries: 10, // 增加重试次数以应对服务器重启
   retryDelay: 1000, // 基础延迟1秒
   maxDelay: 30000, // 最大延迟30秒
   backoffMultiplier: 2, // 指数退避
   // 服务器重启检测
   serverHealthCheckDelay: 5000, // 服务器健康检查延迟
   serverRestartRetries: 3, // 服务器重启后的特殊重试次数
+  serverRecoveryMaxWait: 120000, // 最大等待服务器恢复时间（2分钟）
+  // 任务状态同步
+  taskSyncRetries: 3, // 任务状态同步重试次数
 }
 
 // 服务器状态检测
@@ -100,6 +103,92 @@ class ServerHealthChecker {
     
     console.error('服务器恢复超时')
     return false
+  }
+}
+
+// 任务状态同步器
+class TaskSyncManager {
+  private static async syncTaskStatus(
+    dir: string, 
+    fileName: string, 
+    fileSize: number, 
+    hash: any, 
+    overwrite: boolean, 
+    asTask: boolean,
+    expectedTaskId?: string
+  ) {
+    try {
+      const resp = await fsPreup(dir, fileName, fileSize, hash, overwrite, asTask)
+      if (resp.code === 200) {
+        return {
+          success: true,
+          taskId: resp.data.task_id,
+          sliceSize: resp.data.slice_size,
+          sliceCnt: resp.data.slice_cnt,
+          sliceUploadStatus: resp.data.slice_upload_status,
+          isExpectedTask: !expectedTaskId || resp.data.task_id === expectedTaskId
+        }
+      }
+      return { success: false, error: `Sync failed: ${resp.code} - ${resp.message}` }
+    } catch (error) {
+      return { success: false, error: `Sync error: ${error}` }
+    }
+  }
+
+  static async handleServerRecovery(
+    dir: string, 
+    fileName: string, 
+    fileSize: number, 
+    hash: any, 
+    overwrite: boolean, 
+    asTask: boolean,
+    currentTaskId: string,
+    currentSliceStatus: Uint8Array
+  ) {
+    console.log(`检测到服务器重启，正在同步任务状态: ${currentTaskId}`)
+    
+    for (let attempt = 0; attempt < RETRY_CONFIG.taskSyncRetries; attempt++) {
+      const syncResult = await this.syncTaskStatus(
+        dir, fileName, fileSize, hash, overwrite, asTask, currentTaskId
+      )
+      
+      if (syncResult.success) {
+        const serverSliceStatus = base64ToUint8Array(syncResult.sliceUploadStatus!)
+        
+        if (syncResult.isExpectedTask) {
+          // 服务器任务ID匹配，比较状态
+          console.log(`任务状态同步成功，任务ID匹配: ${currentTaskId}`)
+          return {
+            success: true,
+            needResync: !this.compareSliceStatus(currentSliceStatus, serverSliceStatus),
+            serverStatus: syncResult
+          }
+        } else {
+          // 服务器返回了不同的任务ID，可能是新任务
+          console.log(`服务器返回新任务ID: ${syncResult.taskId}，原任务: ${currentTaskId}`)
+          return {
+            success: true,
+            needRestart: true,
+            serverStatus: syncResult
+          }
+        }
+      }
+      
+      if (attempt < RETRY_CONFIG.taskSyncRetries - 1) {
+        console.log(`任务同步失败，${2 ** attempt}秒后重试...`)
+        await new Promise(resolve => setTimeout(resolve, 2 ** attempt * 1000))
+      }
+    }
+    
+    return { success: false, error: 'Task sync failed after all retries' }
+  }
+  
+  private static compareSliceStatus(local: Uint8Array, server: Uint8Array): boolean {
+    if (local.length !== server.length) return false
+    for (let i = 0; i < local.length; i++) {
+      if (local[i] !== server[i]) return false
+    }
+    return true
   }
 }
 
@@ -327,6 +416,14 @@ export const sliceupload = async (
   let slicehash: string[] = []
   let sliceupstatus: Uint8Array
   let ht: string[] = []
+  
+  // 任务信息，用于状态同步
+  let taskInfo: {
+    taskId: string
+    hash: any
+    sliceSize: number
+    sliceCnt: number
+  } | null = null
 
   // 初始化上传状态
   const state: UploadState = uploadState || {
@@ -390,6 +487,14 @@ export const sliceupload = async (
   
   // 设置总分片数
   state.totalChunks = resp1.data.slice_cnt
+  
+  // 保存任务信息用于状态同步
+  taskInfo = {
+    taskId: resp1.data.task_id,
+    hash,
+    sliceSize: resp1.data.slice_size,
+    sliceCnt: resp1.data.slice_cnt
+  }
   
   if (resp1.data.reuse) {
     setUpload("progress", "100")
@@ -495,6 +600,39 @@ export const sliceupload = async (
         }
         return resp
       } catch (err: any) {
+        // 检查是否是服务器重启导致的任务不一致
+        if (err?.response?.status === 400 && taskInfo) {
+          const errorMsg = err?.response?.data?.message || err.message || ''
+          if (errorMsg.includes('task') || errorMsg.includes('TaskID') || errorMsg.includes('failed get slice upload')) {
+            console.log(`检测到任务ID不一致，尝试同步任务状态: ${task_id}`)
+            
+            try {
+              const syncResult = await TaskSyncManager.handleServerRecovery(
+                dir, file.name, file.size, taskInfo.hash, overwrite, asTask, task_id, sliceupstatus
+              )
+              
+              if (syncResult.success && syncResult.serverStatus) {
+                if (syncResult.needRestart) {
+                  throw new UploadError(
+                    UploadErrorType.SERVER_ERROR,
+                    'Task ID changed, need restart',
+                    '服务器任务状态已变更，需要重新开始上传',
+                    undefined,
+                    false // 不可重试，需要重新开始
+                  )
+                } else if (syncResult.needResync) {
+                  // 更新本地状态
+                  sliceupstatus = base64ToUint8Array(syncResult.serverStatus.sliceUploadStatus!)
+                  console.log('任务状态已同步，继续上传')
+                  // 重新抛出原始错误，让重试机制处理
+                }
+              }
+            } catch (syncError) {
+              console.warn('任务状态同步失败:', syncError)
+            }
+          }
+        }
+        
         // 转换为结构化错误
         const uploadError = err instanceof UploadError 
           ? err 
