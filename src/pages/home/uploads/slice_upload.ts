@@ -15,37 +15,286 @@ import createMutex from "~/utils/mutex"
 
 // 重试配置
 const RETRY_CONFIG = {
-  maxRetries: 3,
-  retryDelay: 1000, // 1秒
+  maxRetries: 5, // 增加重试次数
+  retryDelay: 1000, // 基础延迟1秒
+  maxDelay: 30000, // 最大延迟30秒
   backoffMultiplier: 2, // 指数退避
+  // 服务器重启检测
+  serverHealthCheckDelay: 5000, // 服务器健康检查延迟
+  serverRestartRetries: 3, // 服务器重启后的特殊重试次数
 }
 
-// 大文件优化配置
-const MEMORY_OPTIMIZATION = {
-  largeFileThreshold: 100 * 1024 * 1024, // 100MB
-  maxConcurrentSlices: 2, // 大文件时减少并发
-  chunkReadSize: 64 * 1024, // 64KB 分块读取
+// 服务器状态检测
+class ServerHealthChecker {
+  private static instance: ServerHealthChecker
+  private lastHealthCheck = 0
+  private serverOnline = true
+  private checkPromise: Promise<boolean> | null = null
+
+  static getInstance(): ServerHealthChecker {
+    if (!ServerHealthChecker.instance) {
+      ServerHealthChecker.instance = new ServerHealthChecker()
+    }
+    return ServerHealthChecker.instance
+  }
+
+  async isServerHealthy(): Promise<boolean> {
+    const now = Date.now()
+    
+    // 如果最近检查过且结果为在线，直接返回
+    if (this.serverOnline && now - this.lastHealthCheck < 10000) {
+      return true
+    }
+
+    // 防止并发检查
+    if (this.checkPromise) {
+      return this.checkPromise
+    }
+
+    this.checkPromise = this.performHealthCheck()
+    try {
+      const result = await this.checkPromise
+      this.lastHealthCheck = now
+      this.serverOnline = result
+      return result
+    } finally {
+      this.checkPromise = null
+    }
+  }
+
+  private async performHealthCheck(): Promise<boolean> {
+    try {
+      const response = await r.get('/ping', {
+        timeout: 5000,
+        headers: { Password: password() }
+      })
+      return response.status === 200
+    } catch (error: any) {
+      console.warn('Server health check failed:', error.message)
+      return false
+    }
+  }
+
+  markServerOffline(): void {
+    this.serverOnline = false
+  }
+
+  async waitForServerRecovery(maxWaitTime = 60000): Promise<boolean> {
+    const startTime = Date.now()
+    let attempt = 1
+    
+    console.log('等待服务器恢复...')
+    
+    while (Date.now() - startTime < maxWaitTime) {
+      const isHealthy = await this.isServerHealthy()
+      if (isHealthy) {
+        console.log(`服务器已恢复 (第${attempt}次检查)`)
+        return true
+      }
+      
+      const waitTime = Math.min(5000 * attempt, 15000) // 渐进式等待
+      console.log(`服务器检查失败，${waitTime/1000}秒后重试...`)
+      await new Promise(resolve => setTimeout(resolve, waitTime))
+      attempt++
+    }
+    
+    console.error('服务器恢复超时')
+    return false
+  }
+}
+
+// 错误类型定义
+enum UploadErrorType {
+  NETWORK_ERROR = 'network_error',
+  SERVER_ERROR = 'server_error', 
+  FILE_ERROR = 'file_error',
+  CANCEL_ERROR = 'cancel_error',
+  TIMEOUT_ERROR = 'timeout_error',
+  HASH_ERROR = 'hash_error',
+  MEMORY_ERROR = 'memory_error'
+}
+
+class UploadError extends Error {
+  public type: UploadErrorType
+  public statusCode?: number
+  public retryable: boolean
+  public userMessage: string
+
+  constructor(
+    type: UploadErrorType, 
+    message: string, 
+    userMessage: string,
+    statusCode?: number,
+    retryable: boolean = true
+  ) {
+    super(message)
+    this.type = type
+    this.statusCode = statusCode
+    this.retryable = retryable
+    this.userMessage = userMessage
+    this.name = 'UploadError'
+  }
+
+  static fromAxiosError(error: any, chunkIndex?: number): UploadError {
+    const chunkMsg = chunkIndex !== undefined ? `分片 ${chunkIndex + 1}` : '文件'
+    
+    if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+      return new UploadError(
+        UploadErrorType.TIMEOUT_ERROR,
+        `Upload timeout: ${error.message}`,
+        `${chunkMsg}上传超时，请检查网络连接`,
+        error.response?.status,
+        true
+      )
+    }
+    
+    if (!error.response) {
+      return new UploadError(
+        UploadErrorType.NETWORK_ERROR,
+        `Network error: ${error.message}`,
+        `网络连接失败，请检查网络状态`,
+        undefined,
+        true
+      )
+    }
+
+    const status = error.response.status
+    const data = error.response.data
+
+    if (status >= 500) {
+      return new UploadError(
+        UploadErrorType.SERVER_ERROR,
+        `Server error ${status}: ${data?.message || error.message}`,
+        `服务器暂时不可用 (${status})，正在重试...`,
+        status,
+        true
+      )
+    } else if (status === 413) {
+      return new UploadError(
+        UploadErrorType.FILE_ERROR,
+        `File too large: ${data?.message || error.message}`,
+        `${chunkMsg}过大，请选择较小的文件`,
+        status,
+        false
+      )
+    } else if (status === 401 || status === 403) {
+      return new UploadError(
+        UploadErrorType.SERVER_ERROR,
+        `Authorization failed: ${data?.message || error.message}`,
+        `认证失败，请重新登录`,
+        status,
+        false
+      )
+    } else {
+      return new UploadError(
+        UploadErrorType.SERVER_ERROR,
+        `HTTP ${status}: ${data?.message || error.message}`,
+        `上传失败 (${status})，${data?.message || '未知错误'}`,
+        status,
+        status >= 400 && status < 500 ? false : true
+      )
+    }
+  }
+
+  static fromGenericError(error: any, context: string = ''): UploadError {
+    if (error instanceof UploadError) {
+      return error
+    }
+    
+    const message = error.message || String(error)
+    if (message.includes('memory') || message.includes('Memory')) {
+      return new UploadError(
+        UploadErrorType.MEMORY_ERROR,
+        `Memory error in ${context}: ${message}`,
+        `内存不足，请关闭其他程序或选择较小的文件`,
+        undefined,
+        false
+      )
+    }
+    
+    return new UploadError(
+      UploadErrorType.FILE_ERROR,
+      `${context} error: ${message}`,
+      `文件处理出错: ${message}`,
+      undefined,
+      false
+    )
+  }
+}
+
+// 进度详情接口
+interface UploadProgress {
+  uploadedBytes: number
+  totalBytes: number
+  percentage: number
+  speed: number  // bytes per second
+  remainingTime: number  // seconds
+  activeChunks: number
+  completedChunks: number
+  totalChunks: number
+  lastError?: UploadError
+  stage: 'preparing' | 'hashing' | 'uploading' | 'completing' | 'completed' | 'error'
 }
 
 const progressMutex = createMutex()
 
-// 重试函数
+// 智能重试函数，支持服务器重启检测
 const retryWithBackoff = async <T>(
   fn: () => Promise<T>,
   maxRetries: number = RETRY_CONFIG.maxRetries,
-  delay: number = RETRY_CONFIG.retryDelay
+  delay: number = RETRY_CONFIG.retryDelay,
+  context: string = 'operation'
 ): Promise<T> => {
+  const healthChecker = ServerHealthChecker.getInstance()
   let lastError: Error
+  
   for (let i = 0; i <= maxRetries; i++) {
     try {
       return await fn()
     } catch (error) {
       lastError = error as Error
+      
+      // 如果是最后一次重试，直接抛出错误
       if (i === maxRetries) {
         throw lastError
       }
-      // 指数退避延迟
-      const waitTime = delay * Math.pow(RETRY_CONFIG.backoffMultiplier, i)
+
+      // 检查是否是服务器相关错误
+      const isServerError = error instanceof UploadError && 
+        (error.type === UploadErrorType.SERVER_ERROR || error.type === UploadErrorType.NETWORK_ERROR)
+      
+      if (isServerError && error instanceof UploadError) {
+        // 标记服务器可能离线
+        healthChecker.markServerOffline()
+        
+        // 检查服务器状态
+        const isServerHealthy = await healthChecker.isServerHealthy()
+        
+        if (!isServerHealthy) {
+          console.log(`服务器似乎离线，等待恢复... (${context}, 重试 ${i + 1}/${maxRetries})`)
+          
+          // 等待服务器恢复，使用更长的等待时间
+          const recovered = await healthChecker.waitForServerRecovery(30000)
+          
+          if (!recovered) {
+            // 服务器恢复失败，但还有重试机会，继续重试
+            console.warn(`服务器恢复失败，继续重试 (${context})`)
+          } else {
+            console.log(`服务器已恢复，继续上传 (${context})`)
+          }
+        }
+      }
+      
+      // 计算延迟时间，对服务器错误使用更长的延迟
+      let waitTime = delay * Math.pow(RETRY_CONFIG.backoffMultiplier, i)
+      if (isServerError) {
+        waitTime = Math.max(waitTime, RETRY_CONFIG.serverHealthCheckDelay)
+      }
+      waitTime = Math.min(waitTime, RETRY_CONFIG.maxDelay)
+      
+      console.log(`${context} 失败，${waitTime/1000}秒后重试 (${i + 1}/${maxRetries}):`, 
+        (error as any) instanceof UploadError ? (error as UploadError).userMessage : (error as Error).message)
+      
       await new Promise(resolve => setTimeout(resolve, waitTime))
     }
   }
@@ -58,6 +307,12 @@ interface UploadState {
   isCancelled: boolean
   totalBytes: number
   uploadedBytes: number
+  completedChunks: number
+  totalChunks: number
+  activeChunks: number
+  speed: number
+  lastError?: UploadError
+  onProgress?: (progress: UploadProgress) => void
 }
 
 export const sliceupload = async (
@@ -79,6 +334,10 @@ export const sliceupload = async (
     isCancelled: false,
     totalBytes: file.size,
     uploadedBytes: 0,
+    completedChunks: 0,
+    totalChunks: 0,
+    activeChunks: 0,
+    speed: 0,
   }
 
   // 注册到上传队列
@@ -128,6 +387,10 @@ export const sliceupload = async (
     cleanup()
     return new Error(`Preup failed: ${resp1.code} - ${resp1.message}`)
   }
+  
+  // 设置总分片数
+  state.totalChunks = resp1.data.slice_cnt
+  
   if (resp1.data.reuse) {
     setUpload("progress", "100")
     setUpload("status", "success")
@@ -166,7 +429,13 @@ export const sliceupload = async (
   ) => {
     // 检查是否被取消
     if (state.isCancelled) {
-      throw new Error("Upload cancelled by user")
+      throw new UploadError(
+        UploadErrorType.CANCEL_ERROR,
+        'Upload cancelled by user',
+        '上传已取消',
+        undefined,
+        false
+      )
     }
 
     // 检查是否暂停，等待恢复
@@ -184,33 +453,60 @@ export const sliceupload = async (
     let oldLoaded = 0
 
     return retryWithBackoff(async () => {
-      const resp: EmptyResp = await r.post("/fs/slice_upload", formData, {
-        headers: {
-          "File-Path": encodeURIComponent(dir),
-          "Content-Type": "multipart/form-data",
-          Password: password(),
-        },
-        onUploadProgress: async (progressEvent: any) => {
-          if (!progressEvent.lengthComputable || state.isCancelled) {
-            return
-          }
-          //获取锁
-          const release = await progressMutex.acquire()
-          try {
-            const sliceuploaded = progressEvent.loaded - oldLoaded
-            state.uploadedBytes += sliceuploaded
-            oldLoaded = progressEvent.loaded
-          } finally {
-            progressMutex.release()
-          }
-        },
-      })
+      try {
+        const resp: EmptyResp = await r.post("/fs/slice_upload", formData, {
+          headers: {
+            "File-Path": encodeURIComponent(dir),
+            "Content-Type": "multipart/form-data",
+            Password: password(),
+          },
+          onUploadProgress: async (progressEvent: any) => {
+            if (!progressEvent.lengthComputable || state.isCancelled) {
+              return
+            }
+            //获取锁
+            const release = await progressMutex.acquire()
+            try {
+              const sliceuploaded = progressEvent.loaded - oldLoaded
+              state.uploadedBytes += sliceuploaded
+              oldLoaded = progressEvent.loaded
+              
+              // 更新完成的分片数（估算）
+              state.completedChunks = Math.floor(state.uploadedBytes / (state.totalBytes / state.totalChunks))
+              
+              // 实时进度更新
+              const progress = Math.min(100, ((state.uploadedBytes / state.totalBytes) * 100) | 0)
+              setUpload("progress", progress)
+              
+            } finally {
+              progressMutex.release()
+            }
+          },
+        })
 
-      if (resp.code != 200) {
-        throw new Error(`Slice upload failed: ${resp.code} - ${resp.message}`)
+        if (resp.code != 200) {
+          throw new UploadError(
+            UploadErrorType.SERVER_ERROR,
+            `Slice upload failed: ${resp.code} - ${resp.message}`,
+            `分片 ${idx + 1} 上传失败: ${resp.message || '服务器错误'}`,
+            resp.code,
+            resp.code >= 500
+          )
+        }
+        return resp
+      } catch (err: any) {
+        // 转换为结构化错误
+        const uploadError = err instanceof UploadError 
+          ? err 
+          : UploadError.fromAxiosError(err, idx)
+          
+        // 记录最后的错误
+        state.lastError = uploadError
+        
+        console.error(`Chunk ${idx + 1} upload failed:`, uploadError.userMessage)
+        throw uploadError
       }
-      return resp
-    })
+    }, RETRY_CONFIG.maxRetries, RETRY_CONFIG.retryDelay, `slice_${idx + 1}_upload`)
   }
 
   // 进度速度计算
@@ -254,9 +550,8 @@ export const sliceupload = async (
     }
     } else {
       state.uploadedBytes += Math.min(resp1.data.slice_size, state.totalBytes)
-    }  // 后续分片并发上传，根据文件大小动态调整并发数
-  const isLargeFile = file.size > MEMORY_OPTIMIZATION.largeFileThreshold
-  const concurrentLimit = isLargeFile ? MEMORY_OPTIMIZATION.maxConcurrentSlices : 3
+    }  // 后续分片并发上传
+  const concurrentLimit = 3 // 固定3个并发
   const limit = pLimit(concurrentLimit)
 
   console.log(`File size: ${(file.size / 1024 / 1024).toFixed(2)}MB, using ${concurrentLimit} concurrent uploads`)
@@ -298,22 +593,62 @@ export const sliceupload = async (
       "progress",
       Math.min(100, ((state.uploadedBytes / state.totalBytes) * 100) | 0),
     )
+    setUpload("status", "error")
     cleanup()
-    return errors[0]
+    
+    // 返回最具代表性的错误
+    const serverErrors = errors.filter(e => e instanceof UploadError && e.type === UploadErrorType.SERVER_ERROR)
+    const networkErrors = errors.filter(e => e instanceof UploadError && e.type === UploadErrorType.NETWORK_ERROR)
+    
+    if (serverErrors.length > 0) {
+      return serverErrors[0]
+    } else if (networkErrors.length > 0) {
+      return networkErrors[0]
+    } else {
+      return errors[0]
+    }
   } else {
     if (!asTask) {
       setUpload("status", "backending")
     }
-    const resp = await FsSliceupComplete(dir, resp1.data.task_id)
-    completeFlag = true
-    cleanup()
-    if (resp.code != 200) {
-      return new Error(`Upload complete failed: ${resp.code} - ${resp.message}`)
-    } else if (resp.data.complete == 0) {
-      return new Error("slice missing, please reupload")
+    
+    try {
+      const resp = await retryWithBackoff(
+        () => FsSliceupComplete(dir, resp1.data.task_id),
+        RETRY_CONFIG.maxRetries,
+        RETRY_CONFIG.retryDelay,
+        'upload_complete'
+      )
+      
+      completeFlag = true
+      cleanup()
+      
+      if (resp.code != 200) {
+        return new UploadError(
+          UploadErrorType.SERVER_ERROR,
+          `Upload complete failed: ${resp.code} - ${resp.message}`,
+          `上传完成确认失败: ${resp.message}`,
+          resp.code,
+          resp.code >= 500
+        )
+      } else if (resp.data.complete == 0) {
+        return new UploadError(
+          UploadErrorType.SERVER_ERROR,
+          "slice missing, please reupload",
+          "文件分片缺失，请重新上传",
+          undefined,
+          true
+        )
+      }
+      
+      //状态处理交给上层
+      return
+    } catch (error) {
+      cleanup()
+      return error instanceof UploadError 
+        ? error 
+        : UploadError.fromGenericError(error, 'upload_complete')
     }
-    //状态处理交给上层
-    return
   }
 }
 
@@ -393,3 +728,40 @@ export const uploadQueue = UploadQueue.getInstance()
 export const pauseUpload = (uploadPath: string) => uploadQueue.pauseUpload(uploadPath)
 export const resumeUpload = (uploadPath: string) => uploadQueue.resumeUpload(uploadPath)
 export const cancelUpload = (uploadPath: string) => uploadQueue.cancelUpload(uploadPath)
+
+// 导出错误类型和辅助函数
+export { UploadError, UploadErrorType }
+export type { UploadProgress }
+
+// 导出服务器健康检查器
+export const serverHealthChecker = ServerHealthChecker.getInstance()
+
+// 获取上传详细信息的辅助函数
+export const getUploadDetails = (uploadPath: string): {
+  state?: UploadState,
+  progress?: UploadProgress,
+  errorMessage?: string
+} => {
+  const state = uploadQueue.getUploadState(uploadPath)
+  if (!state) return {}
+  
+  const progress: UploadProgress = {
+    uploadedBytes: state.uploadedBytes,
+    totalBytes: state.totalBytes,
+    percentage: Math.min(100, ((state.uploadedBytes / state.totalBytes) * 100) | 0),
+    speed: state.speed,
+    remainingTime: state.speed > 0 ? (state.totalBytes - state.uploadedBytes) / state.speed : 0,
+    activeChunks: state.activeChunks,
+    completedChunks: state.completedChunks,
+    totalChunks: state.totalChunks,
+    lastError: state.lastError,
+    stage: state.isCancelled ? 'error' : 
+           state.uploadedBytes >= state.totalBytes ? 'completed' : 'uploading'
+  }
+  
+  return {
+    state,
+    progress,
+    errorMessage: state.lastError?.userMessage
+  }
+}
