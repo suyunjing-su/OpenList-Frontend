@@ -87,7 +87,7 @@ const Upload = () => {
   })
   const allDone = () => {
     return uploadFiles.uploads.every(({ status }) =>
-      ["success", "error"].includes(status),
+      ["success", "error", "tasked"].includes(status),
     )
   }
   let fileInput: HTMLInputElement
@@ -150,7 +150,8 @@ const Upload = () => {
                 onClick={() => {
                   setUploadFiles("uploads", (_uploads) =>
                     _uploads.filter(
-                      ({ status }) => !["success", "error"].includes(status),
+                      ({ status }) =>
+                        !["success", "error", "tasked"].includes(status),
                     ),
                   )
                   console.log(uploadFiles.uploads)

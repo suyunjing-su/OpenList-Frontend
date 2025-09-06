@@ -12,6 +12,7 @@ export const StatusBadge = {
   pending: "neutral",
   uploading: "info",
   backending: "info",
+  tasked: "info",
   success: "success",
   error: "danger",
 } as const
