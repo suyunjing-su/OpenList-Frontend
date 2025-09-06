@@ -2,7 +2,6 @@ import { password } from "~/store"
 import { EmptyResp } from "~/types"
 import { r, pathDir } from "~/utils"
 import { SetUpload, Upload } from "./types"
-import pLimit from "p-limit"
 import {
   calculateHash,
   calculateSliceHash,
@@ -740,6 +739,7 @@ export const sliceupload = async (
       state.uploadedBytes += Math.min(resp1.data.slice_size, state.totalBytes)
     }  // 后续分片并发上传
   const concurrentLimit = 3 // 固定3个并发
+  const { default: pLimit } = await import("p-limit")
   const limit = pLimit(concurrentLimit)
 
   console.log(`File size: ${(file.size / 1024 / 1024).toFixed(2)}MB, using ${concurrentLimit} concurrent uploads`)
