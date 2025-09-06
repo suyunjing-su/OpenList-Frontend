@@ -12,7 +12,6 @@ import {
 } from "./util"
 import createMutex from "~/utils/mutex"
 
-// 重试配置
 const RETRY_CONFIG = {
   maxRetries: 15,
   retryDelay: 1000,
@@ -21,7 +20,6 @@ const RETRY_CONFIG = {
   nativeSliceRetries: 8,
 }
 
-// 错误类型定义
 enum UploadErrorType {
   NETWORK_ERROR = "network_error",
   SERVER_ERROR = "server_error",
@@ -141,7 +139,6 @@ class UploadError extends Error {
   }
 }
 
-// 进度详情接口
 interface UploadProgress {
   uploadedBytes: number
   totalBytes: number
@@ -163,7 +160,6 @@ interface UploadProgress {
 
 const progressMutex = createMutex()
 
-// 标准重试函数
 const retryWithBackoff = async <T>(
   fn: () => Promise<T>,
   maxRetries: number = RETRY_CONFIG.maxRetries,
@@ -227,7 +223,6 @@ export const SliceUpload: Upload = async (
   let sliceupstatus: Uint8Array
   let ht: string[] = []
 
-  // 任务信息，用于状态同步
   let taskInfo: {
     taskId: string
     hash: any
@@ -247,10 +242,8 @@ export const SliceUpload: Upload = async (
     speed: 0,
   }
 
-  // 注册到上传队列
   uploadQueue.addUpload(uploadPath, state)
 
-  // 清理函数
   let speedInterval: any
   const cleanup = () => {
     if (speedInterval) {
@@ -261,7 +254,6 @@ export const SliceUpload: Upload = async (
 
   const dir = pathDir(uploadPath)
 
-  //获取上传需要的信息
   const resp = await fsUploadInfo(dir)
   if (resp.code != 200) {
     cleanup()
@@ -281,7 +273,6 @@ export const SliceUpload: Upload = async (
     ht.push(HashType.Md5256kb)
   }
   const hash = await calculateHash(file, ht)
-  // 预上传
   const resp1 = await fsPreup(
     dir,
     file.name,
@@ -295,10 +286,8 @@ export const SliceUpload: Upload = async (
     return new Error(`Preup failed: ${resp1.code} - ${resp1.message}`)
   }
 
-  // 设置总分片数
   state.totalChunks = resp1.data.slice_cnt
 
-  // 保存任务信息用于状态同步
   taskInfo = {
     taskId: resp1.data.task_id,
     hash,
@@ -313,19 +302,15 @@ export const SliceUpload: Upload = async (
     cleanup()
     return
   }
-  //计算分片hash
   if (resp.data.slice_hash_need) {
     slicehash = await calculateSliceHash(file, resp1.data.slice_size, hashtype)
   }
-  // 分片上传状态
   sliceupstatus = base64ToUint8Array(resp1.data.slice_upload_status)
 
-  // 进度和速度统计
   let lastTimestamp = Date.now()
   let lastUploadedBytes = 0
   let completeFlag = false
 
-  // 计算已上传的字节数（用于断点续传）
   for (let i = 0; i < resp1.data.slice_cnt; i++) {
     if (isSliceUploaded(sliceupstatus, i)) {
       state.uploadedBytes += Math.min(
@@ -335,14 +320,12 @@ export const SliceUpload: Upload = async (
     }
   }
 
-  // 上传分片的核心函数，带进度、速度统计、重试和暂停支持
   const uploadChunk = async (
     chunk: Blob,
     idx: number,
     slice_hash: string,
     task_id: string,
   ) => {
-    // 检查是否被取消
     if (state.isCancelled) {
       throw new UploadError(
         UploadErrorType.CANCEL_ERROR,
@@ -353,7 +336,6 @@ export const SliceUpload: Upload = async (
       )
     }
 
-    // 检查是否暂停，等待恢复
     while (state.isPaused && !state.isCancelled) {
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
@@ -375,19 +357,16 @@ export const SliceUpload: Upload = async (
               if (!progressEvent.lengthComputable || state.isCancelled) {
                 return
               }
-              //获取锁
               const release = await progressMutex.acquire()
               try {
                 const sliceuploaded = progressEvent.loaded - oldLoaded
                 state.uploadedBytes += sliceuploaded
                 oldLoaded = progressEvent.loaded
 
-                // 更新完成的分片数（估算）
                 state.completedChunks = Math.floor(
                   state.uploadedBytes / (state.totalBytes / state.totalChunks),
                 )
 
-                // 实时进度更新
                 const progress = Math.min(
                   100,
                   ((state.uploadedBytes / state.totalBytes) * 100) | 0,
@@ -420,7 +399,7 @@ export const SliceUpload: Upload = async (
           state.lastError = uploadError
 
           console.error(
-            `💥 Slice ${idx + 1} upload failed:`,
+            `Slice ${idx + 1} upload failed:`,
             uploadError.userMessage,
           )
           throw uploadError
@@ -432,7 +411,6 @@ export const SliceUpload: Upload = async (
     )
   }
 
-  // 进度速度计算
   speedInterval = setInterval(() => {
     if (completeFlag || state.isCancelled) {
       clearInterval(speedInterval)
@@ -441,7 +419,6 @@ export const SliceUpload: Upload = async (
 
     const intervalLoaded = state.uploadedBytes - lastUploadedBytes
     if (intervalLoaded < 1000) {
-      //进度太小，不更新
       return
     }
     const speed = intervalLoaded / ((Date.now() - lastTimestamp) / 1000)
@@ -455,10 +432,8 @@ export const SliceUpload: Upload = async (
     lastUploadedBytes = state.uploadedBytes
   }, 1000)
 
-  // 开始计时
   lastTimestamp = Date.now()
 
-  // 先上传第一个分片，slicehash全部用逗号拼接传递
   if (!isSliceUploaded(sliceupstatus, 0)) {
     const chunk = file.slice(0, resp1.data.slice_size)
     try {
@@ -478,13 +453,11 @@ export const SliceUpload: Upload = async (
     state.uploadedBytes += Math.min(resp1.data.slice_size, state.totalBytes)
   }
 
-  // 后续分片并发上传
   const concurrentLimit = 3 // 固定3个并发
   console.log(
     `File size: ${(file.size / 1024 / 1024).toFixed(2)}MB, using ${concurrentLimit} concurrent uploads`,
   )
 
-  // 原生并发控制实现
   const pendingSlices: number[] = []
   for (let i = 1; i < resp1.data.slice_cnt; i++) {
     if (!isSliceUploaded(sliceupstatus, i)) {
@@ -495,7 +468,6 @@ export const SliceUpload: Upload = async (
   const errors: Error[] = []
   let currentIndex = 0
 
-  // 并发处理函数
   const processNextSlice = async (): Promise<void> => {
     while (currentIndex < pendingSlices.length) {
       const sliceIndex = pendingSlices[currentIndex++]
@@ -517,7 +489,6 @@ export const SliceUpload: Upload = async (
     }
   }
 
-  // 启动并发任务
   const tasks: Promise<void>[] = []
   for (let i = 0; i < Math.min(concurrentLimit, pendingSlices.length); i++) {
     tasks.push(processNextSlice())
@@ -525,7 +496,6 @@ export const SliceUpload: Upload = async (
 
   await Promise.all(tasks)
 
-  // 最终处理上传结果
   if (errors.length > 0) {
     setUpload(
       "progress",
@@ -534,7 +504,6 @@ export const SliceUpload: Upload = async (
     setUpload("status", "error")
     cleanup()
 
-    // 返回最具代表性的错误
     const serverErrors = errors.filter(
       (e) =>
         e instanceof UploadError && e.type === UploadErrorType.SERVER_ERROR,
@@ -585,7 +554,6 @@ export const SliceUpload: Upload = async (
         )
       }
 
-      //状态处理交给上层
       return
     } catch (error) {
       cleanup()
@@ -596,7 +564,6 @@ export const SliceUpload: Upload = async (
   }
 }
 
-// 解码 base64 字符串为 Uint8Array
 const base64ToUint8Array = (base64: string): Uint8Array => {
   const binary = atob(base64)
   const len = binary.length
@@ -607,7 +574,6 @@ const base64ToUint8Array = (base64: string): Uint8Array => {
   return bytes
 }
 
-// 判断第 idx 个分片是否已上传
 const isSliceUploaded = (status: Uint8Array, idx: number): boolean => {
   //   const bytes = base64ToUint8Array(statusBase64)
   const byteIdx = Math.floor(idx / 8)
@@ -669,7 +635,6 @@ class UploadQueue {
   }
 }
 
-// 导出队列管理函数
 export const uploadQueue = UploadQueue.getInstance()
 
 export const pauseUpload = (uploadPath: string) =>
@@ -679,11 +644,9 @@ export const resumeUpload = (uploadPath: string) =>
 export const cancelUpload = (uploadPath: string) =>
   uploadQueue.cancelUpload(uploadPath)
 
-// 导出错误类型和辅助函数
 export { UploadError, UploadErrorType }
 export type { UploadProgress }
 
-// 获取上传详细信息的辅助函数
 export const getUploadDetails = (
   uploadPath: string,
 ): {
