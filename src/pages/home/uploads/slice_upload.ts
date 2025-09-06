@@ -45,7 +45,7 @@ class ServerHealthChecker {
 
   async isServerHealthy(): Promise<boolean> {
     const now = Date.now()
-    
+
     // 如果最近检查过且结果为在线，直接返回
     if (this.serverOnline && now - this.lastHealthCheck < 10000) {
       return true
@@ -69,13 +69,13 @@ class ServerHealthChecker {
 
   private async performHealthCheck(): Promise<boolean> {
     try {
-      const response = await r.get('/ping', {
+      const response = await r.get("/ping", {
         timeout: 5000,
-        headers: { Password: password() }
+        headers: { Password: password() },
       })
       return response.status === 200
     } catch (error: any) {
-      console.warn('Server health check failed:', error.message)
+      console.warn("Server health check failed:", error.message)
       return false
     }
   }
@@ -87,23 +87,23 @@ class ServerHealthChecker {
   async waitForServerRecovery(maxWaitTime = 60000): Promise<boolean> {
     const startTime = Date.now()
     let attempt = 1
-    
-    console.log('等待服务器恢复...')
-    
+
+    console.log("等待服务器恢复...")
+
     while (Date.now() - startTime < maxWaitTime) {
       const isHealthy = await this.isServerHealthy()
       if (isHealthy) {
         console.log(`服务器已恢复 (第${attempt}次检查)`)
         return true
       }
-      
+
       const waitTime = Math.min(5000 * attempt, 15000) // 渐进式等待
-      console.log(`服务器检查失败，${waitTime/1000}秒后重试...`)
-      await new Promise(resolve => setTimeout(resolve, waitTime))
+      console.log(`服务器检查失败，${waitTime / 1000}秒后重试...`)
+      await new Promise((resolve) => setTimeout(resolve, waitTime))
       attempt++
     }
-    
-    console.error('Server recovery timeout')
+
+    console.error("Server recovery timeout")
     return false
   }
 }
@@ -111,16 +111,23 @@ class ServerHealthChecker {
 // 任务状态同步器
 class TaskSyncManager {
   private static async syncTaskStatus(
-    dir: string, 
-    fileName: string, 
-    fileSize: number, 
-    hash: any, 
-    overwrite: boolean, 
+    dir: string,
+    fileName: string,
+    fileSize: number,
+    hash: any,
+    overwrite: boolean,
     asTask: boolean,
-    expectedTaskId?: string
+    expectedTaskId?: string,
   ) {
     try {
-      const resp = await fsPreup(dir, fileName, fileSize, hash, overwrite, asTask)
+      const resp = await fsPreup(
+        dir,
+        fileName,
+        fileSize,
+        hash,
+        overwrite,
+        asTask,
+      )
       if (resp.code === 200) {
         return {
           success: true,
@@ -128,93 +135,124 @@ class TaskSyncManager {
           sliceSize: resp.data.slice_size,
           sliceCnt: resp.data.slice_cnt,
           sliceUploadStatus: resp.data.slice_upload_status,
-          isExpectedTask: !expectedTaskId || resp.data.task_id === expectedTaskId
+          isExpectedTask:
+            !expectedTaskId || resp.data.task_id === expectedTaskId,
         }
       }
-      return { success: false, error: `Sync failed: ${resp.code} - ${resp.message}` }
+      return {
+        success: false,
+        error: `Sync failed: ${resp.code} - ${resp.message}`,
+      }
     } catch (error) {
       return { success: false, error: `Sync error: ${error}` }
     }
   }
 
   static async handleServerRecovery(
-    dir: string, 
-    fileName: string, 
-    fileSize: number, 
-    hash: any, 
-    overwrite: boolean, 
+    dir: string,
+    fileName: string,
+    fileSize: number,
+    hash: any,
+    overwrite: boolean,
     asTask: boolean,
     currentTaskId: string,
-    currentSliceStatus: Uint8Array
+    currentSliceStatus: Uint8Array,
   ) {
-    console.log(`🔄 Server restart detected, syncing task status: ${currentTaskId}`)
-    
+    console.log(
+      `🔄 Server restart detected, syncing task status: ${currentTaskId}`,
+    )
+
     for (let attempt = 0; attempt < RETRY_CONFIG.taskSyncRetries; attempt++) {
       try {
         const syncResult = await this.syncTaskStatus(
-          dir, fileName, fileSize, hash, overwrite, asTask, currentTaskId
+          dir,
+          fileName,
+          fileSize,
+          hash,
+          overwrite,
+          asTask,
+          currentTaskId,
         )
-        
+
         if (syncResult.success) {
-          const serverSliceStatus = base64ToUint8Array(syncResult.sliceUploadStatus!)
-          
+          const serverSliceStatus = base64ToUint8Array(
+            syncResult.sliceUploadStatus!,
+          )
+
           if (syncResult.isExpectedTask) {
             // Server task ID matches, compare status
-            const statusMatches = this.compareSliceStatus(currentSliceStatus, serverSliceStatus)
-            const serverCompletedSlices = this.countCompletedSlices(serverSliceStatus)
-            const localCompletedSlices = this.countCompletedSlices(currentSliceStatus)
-            
-            console.log(`✅ Task status sync successful - TaskID: ${currentTaskId}`)
-            console.log(`📊 Server completed slices: ${serverCompletedSlices}, local records: ${localCompletedSlices}`)
-            
+            const statusMatches = this.compareSliceStatus(
+              currentSliceStatus,
+              serverSliceStatus,
+            )
+            const serverCompletedSlices =
+              this.countCompletedSlices(serverSliceStatus)
+            const localCompletedSlices =
+              this.countCompletedSlices(currentSliceStatus)
+
+            console.log(
+              `✅ Task status sync successful - TaskID: ${currentTaskId}`,
+            )
+            console.log(
+              `📊 Server completed slices: ${serverCompletedSlices}, local records: ${localCompletedSlices}`,
+            )
+
             return {
               success: true,
               needResync: !statusMatches,
               serverStatus: syncResult,
-              message: `Task recovery successful, server has completed ${serverCompletedSlices} slices`
+              message: `Task recovery successful, server has completed ${serverCompletedSlices} slices`,
             }
           } else {
             // Server returned different task ID, need to restart
-            console.log(`⚠️ Server returned new task ID: ${syncResult.taskId}, original task invalid: ${currentTaskId}`)
+            console.log(
+              `⚠️ Server returned new task ID: ${syncResult.taskId}, original task invalid: ${currentTaskId}`,
+            )
             return {
               success: true,
               needRestart: true,
               serverStatus: syncResult,
-              message: 'Server task has changed, need to restart upload'
+              message: "Server task has changed, need to restart upload",
             }
           }
         }
       } catch (error) {
         console.warn(`🔄 Task sync attempt ${attempt + 1} failed:`, error)
       }
-      
+
       if (attempt < RETRY_CONFIG.taskSyncRetries - 1) {
         const waitTime = RETRY_CONFIG.taskSyncDelay * (attempt + 1)
-        console.log(`⏳ Retrying task sync in ${waitTime/1000} seconds...`)
-        await new Promise(resolve => setTimeout(resolve, waitTime))
+        console.log(`⏳ Retrying task sync in ${waitTime / 1000} seconds...`)
+        await new Promise((resolve) => setTimeout(resolve, waitTime))
       }
     }
-    
-    return { 
-      success: false, 
-      error: 'Task sync failed after all retries',
-      message: 'Task status sync failed, please restart upload'
+
+    return {
+      success: false,
+      error: "Task sync failed after all retries",
+      message: "Task status sync failed, please restart upload",
     }
   }
-  
+
   private static countCompletedSlices(sliceStatus: Uint8Array): number {
     let count = 0
     for (let i = 0; i < sliceStatus.length * 8; i++) {
       const byteIndex = Math.floor(i / 8)
       const bitIndex = i % 8
-      if (byteIndex < sliceStatus.length && (sliceStatus[byteIndex] & (1 << bitIndex)) !== 0) {
+      if (
+        byteIndex < sliceStatus.length &&
+        (sliceStatus[byteIndex] & (1 << bitIndex)) !== 0
+      ) {
         count++
       }
     }
     return count
   }
-  
-  private static compareSliceStatus(local: Uint8Array, server: Uint8Array): boolean {
+
+  private static compareSliceStatus(
+    local: Uint8Array,
+    server: Uint8Array,
+  ): boolean {
     if (local.length !== server.length) return false
     for (let i = 0; i < local.length; i++) {
       if (local[i] !== server[i]) return false
@@ -225,13 +263,13 @@ class TaskSyncManager {
 
 // 错误类型定义
 enum UploadErrorType {
-  NETWORK_ERROR = 'network_error',
-  SERVER_ERROR = 'server_error', 
-  FILE_ERROR = 'file_error',
-  CANCEL_ERROR = 'cancel_error',
-  TIMEOUT_ERROR = 'timeout_error',
-  HASH_ERROR = 'hash_error',
-  MEMORY_ERROR = 'memory_error'
+  NETWORK_ERROR = "network_error",
+  SERVER_ERROR = "server_error",
+  FILE_ERROR = "file_error",
+  CANCEL_ERROR = "cancel_error",
+  TIMEOUT_ERROR = "timeout_error",
+  HASH_ERROR = "hash_error",
+  MEMORY_ERROR = "memory_error",
 }
 
 class UploadError extends Error {
@@ -241,40 +279,41 @@ class UploadError extends Error {
   public userMessage: string
 
   constructor(
-    type: UploadErrorType, 
-    message: string, 
+    type: UploadErrorType,
+    message: string,
     userMessage: string,
     statusCode?: number,
-    retryable: boolean = true
+    retryable: boolean = true,
   ) {
     super(message)
     this.type = type
     this.statusCode = statusCode
     this.retryable = retryable
     this.userMessage = userMessage
-    this.name = 'UploadError'
+    this.name = "UploadError"
   }
 
   static fromAxiosError(error: any, chunkIndex?: number): UploadError {
-    const chunkMsg = chunkIndex !== undefined ? `分片 ${chunkIndex + 1}` : '文件'
-    
-    if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+    const chunkMsg =
+      chunkIndex !== undefined ? `分片 ${chunkIndex + 1}` : "文件"
+
+    if (error.code === "ECONNABORTED" || error.message?.includes("timeout")) {
       return new UploadError(
         UploadErrorType.TIMEOUT_ERROR,
         `Upload timeout: ${error.message}`,
         `${chunkMsg}上传超时，请检查网络连接`,
         error.response?.status,
-        true
+        true,
       )
     }
-    
+
     if (!error.response) {
       return new UploadError(
         UploadErrorType.NETWORK_ERROR,
         `Network error: ${error.message}`,
         `网络连接失败，请检查网络状态`,
         undefined,
-        true
+        true,
       )
     }
 
@@ -287,7 +326,7 @@ class UploadError extends Error {
         `Server error ${status}: ${data?.message || error.message}`,
         `服务器暂时不可用 (${status})，正在重试...`,
         status,
-        true
+        true,
       )
     } else if (status === 413) {
       return new UploadError(
@@ -295,7 +334,7 @@ class UploadError extends Error {
         `File too large: ${data?.message || error.message}`,
         `${chunkMsg}过大，请选择较小的文件`,
         status,
-        false
+        false,
       )
     } else if (status === 401 || status === 403) {
       return new UploadError(
@@ -303,41 +342,41 @@ class UploadError extends Error {
         `Authorization failed: ${data?.message || error.message}`,
         `认证失败，请重新登录`,
         status,
-        false
+        false,
       )
     } else {
       return new UploadError(
         UploadErrorType.SERVER_ERROR,
         `HTTP ${status}: ${data?.message || error.message}`,
-        `上传失败 (${status})，${data?.message || '未知错误'}`,
+        `上传失败 (${status})，${data?.message || "未知错误"}`,
         status,
-        status >= 400 && status < 500 ? false : true
+        status >= 400 && status < 500 ? false : true,
       )
     }
   }
 
-  static fromGenericError(error: any, context: string = ''): UploadError {
+  static fromGenericError(error: any, context: string = ""): UploadError {
     if (error instanceof UploadError) {
       return error
     }
-    
+
     const message = error.message || String(error)
-    if (message.includes('memory') || message.includes('Memory')) {
+    if (message.includes("memory") || message.includes("Memory")) {
       return new UploadError(
         UploadErrorType.MEMORY_ERROR,
         `Memory error in ${context}: ${message}`,
         `内存不足，请关闭其他程序或选择较小的文件`,
         undefined,
-        false
+        false,
       )
     }
-    
+
     return new UploadError(
       UploadErrorType.FILE_ERROR,
       `${context} error: ${message}`,
       `文件处理出错: ${message}`,
       undefined,
-      false
+      false,
     )
   }
 }
@@ -347,13 +386,19 @@ interface UploadProgress {
   uploadedBytes: number
   totalBytes: number
   percentage: number
-  speed: number  // bytes per second
-  remainingTime: number  // seconds
+  speed: number // bytes per second
+  remainingTime: number // seconds
   activeChunks: number
   completedChunks: number
   totalChunks: number
   lastError?: UploadError
-  stage: 'preparing' | 'hashing' | 'uploading' | 'completing' | 'completed' | 'error'
+  stage:
+    | "preparing"
+    | "hashing"
+    | "uploading"
+    | "completing"
+    | "completed"
+    | "error"
 }
 
 const progressMutex = createMutex()
@@ -363,59 +408,69 @@ const retryWithBackoff = async <T>(
   fn: () => Promise<T>,
   maxRetries: number = RETRY_CONFIG.maxRetries,
   delay: number = RETRY_CONFIG.retryDelay,
-  context: string = 'operation'
+  context: string = "operation",
 ): Promise<T> => {
   const healthChecker = ServerHealthChecker.getInstance()
   let lastError: Error
-  
+
   for (let i = 0; i <= maxRetries; i++) {
     try {
       return await fn()
     } catch (error) {
       lastError = error as Error
-      
+
       // 如果是最后一次重试，直接抛出错误
       if (i === maxRetries) {
         throw lastError
       }
 
       // Check if server-related error
-      const isServerError = error instanceof UploadError && 
-        (error.type === UploadErrorType.SERVER_ERROR || error.type === UploadErrorType.NETWORK_ERROR)
-      
+      const isServerError =
+        error instanceof UploadError &&
+        (error.type === UploadErrorType.SERVER_ERROR ||
+          error.type === UploadErrorType.NETWORK_ERROR)
+
       if (isServerError && error instanceof UploadError) {
         // Mark server as possibly offline
         healthChecker.markServerOffline()
-        
+
         // Check server status
         const isServerHealthy = await healthChecker.isServerHealthy()
-        
+
         if (!isServerHealthy) {
-          console.log(`Server appears offline, waiting for recovery... (${context}, retry ${i + 1}/${maxRetries})`)
-          
+          console.log(
+            `Server appears offline, waiting for recovery... (${context}, retry ${i + 1}/${maxRetries})`,
+          )
+
           // Wait for server recovery with longer wait time
           const recovered = await healthChecker.waitForServerRecovery(30000)
-          
+
           if (!recovered) {
             // Server recovery failed, but still have retry chances, continue retrying
-            console.warn(`Server recovery failed, continue retrying (${context})`)
+            console.warn(
+              `Server recovery failed, continue retrying (${context})`,
+            )
           } else {
             console.log(`Server recovered, continue upload (${context})`)
           }
         }
       }
-      
+
       // Calculate delay time, use longer delay for server errors
       let waitTime = delay * Math.pow(RETRY_CONFIG.backoffMultiplier, i)
       if (isServerError) {
         waitTime = Math.max(waitTime, RETRY_CONFIG.serverHealthCheckDelay)
       }
       waitTime = Math.min(waitTime, RETRY_CONFIG.maxDelay)
-      
-      console.log(`${context} failed, retrying in ${waitTime/1000} seconds (${i + 1}/${maxRetries}):`, 
-        (error as any) instanceof UploadError ? (error as UploadError).userMessage : (error as Error).message)
-      
-      await new Promise(resolve => setTimeout(resolve, waitTime))
+
+      console.log(
+        `${context} failed, retrying in ${waitTime / 1000} seconds (${i + 1}/${maxRetries}):`,
+        (error as any) instanceof UploadError
+          ? (error as UploadError).userMessage
+          : (error as Error).message,
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, waitTime))
     }
   }
   throw lastError!
@@ -447,7 +502,7 @@ export const sliceupload = async (
   let slicehash: string[] = []
   let sliceupstatus: Uint8Array
   let ht: string[] = []
-  
+
   // 任务信息，用于状态同步
   let taskInfo: {
     taskId: string
@@ -515,18 +570,18 @@ export const sliceupload = async (
     cleanup()
     return new Error(`Preup failed: ${resp1.code} - ${resp1.message}`)
   }
-  
+
   // 设置总分片数
   state.totalChunks = resp1.data.slice_cnt
-  
+
   // 保存任务信息用于状态同步
   taskInfo = {
     taskId: resp1.data.task_id,
     hash,
     sliceSize: resp1.data.slice_size,
-    sliceCnt: resp1.data.slice_cnt
+    sliceCnt: resp1.data.slice_cnt,
   }
-  
+
   if (resp1.data.reuse) {
     setUpload("progress", "100")
     setUpload("status", "success")
@@ -567,133 +622,163 @@ export const sliceupload = async (
     if (state.isCancelled) {
       throw new UploadError(
         UploadErrorType.CANCEL_ERROR,
-        'Upload cancelled by user',
-        '上传已取消',
+        "Upload cancelled by user",
+        "上传已取消",
         undefined,
-        false
+        false,
       )
     }
 
     // 检查是否暂停，等待恢复
     while (state.isPaused && !state.isCancelled) {
-      await new Promise(resolve => setTimeout(resolve, 100))
+      await new Promise((resolve) => setTimeout(resolve, 100))
     }
-
-    const formData = new FormData()
-    formData.append("task_id", task_id)
-    formData.append("slice_hash", slice_hash)
-    formData.append("slice_num", idx.toString())
-    formData.append("slice", chunk)
-
-    let oldTimestamp = Date.now()
     let oldLoaded = 0
 
-    return retryWithBackoff(async () => {
-      try {
-        const resp: EmptyResp = await r.post("/fs/slice_upload", formData, {
-          headers: {
-            "File-Path": encodeURIComponent(dir),
-            "Content-Type": "multipart/form-data",
-            Password: password(),
-          },
-          onUploadProgress: async (progressEvent: any) => {
-            if (!progressEvent.lengthComputable || state.isCancelled) {
-              return
-            }
-            //获取锁
-            const release = await progressMutex.acquire()
-            try {
-              const sliceuploaded = progressEvent.loaded - oldLoaded
-              state.uploadedBytes += sliceuploaded
-              oldLoaded = progressEvent.loaded
-              
-              // 更新完成的分片数（估算）
-              state.completedChunks = Math.floor(state.uploadedBytes / (state.totalBytes / state.totalChunks))
-              
-              // 实时进度更新
-              const progress = Math.min(100, ((state.uploadedBytes / state.totalBytes) * 100) | 0)
-              setUpload("progress", progress)
-              
-            } finally {
-              progressMutex.release()
-            }
-          },
-        })
-
-        if (resp.code != 200) {
-          throw new UploadError(
-            UploadErrorType.SERVER_ERROR,
-            `Slice upload failed: ${resp.code} - ${resp.message}`,
-            `分片 ${idx + 1} 上传失败: ${resp.message || '服务器错误'}`,
-            resp.code,
-            resp.code >= 500
-          )
-        }
-        return resp
-      } catch (err: any) {
-        // 🔍 Smart error detection: server restart / task lost
-        if (err?.response?.status === 400 && taskInfo) {
-          const errorMsg = err?.response?.data?.message || err.message || ''
-          const isTaskNotFound = errorMsg.includes('task') || 
-                                 errorMsg.includes('TaskID') || 
-                                 errorMsg.includes('failed get slice upload')
-          
-          if (isTaskNotFound) {
-            console.log(`🚨 Task lost detected, starting smart recovery: ${task_id} (slice ${idx + 1})`)
-            
-            try {
-              const syncResult = await TaskSyncManager.handleServerRecovery(
-                dir, file.name, file.size, taskInfo.hash, overwrite, asTask, task_id, sliceupstatus
-              )
-              
-              if (syncResult.success) {
-                if (syncResult.needRestart) {
-                  // Task needs to restart
-                  console.log(`❌ ${syncResult.message}`)
-                  throw new UploadError(
-                    UploadErrorType.SERVER_ERROR,
-                    'Task ID changed, need restart',
-                    syncResult.message || 'Server task status changed, need to restart upload',
-                    undefined,
-                    false // Not retryable, need restart
-                  )
-                } else if (syncResult.needResync) {
-                  // Status synced, update local status and continue retry
-                  sliceupstatus = base64ToUint8Array(syncResult.serverStatus!.sliceUploadStatus!)
-                  console.log(`✅ ${syncResult.message}, continuing upload slice ${idx + 1}`)
-                  
-                  // Check if current slice is already completed on server
-                  if (isSliceUploaded(sliceupstatus, idx)) {
-                    console.log(`✅ Slice ${idx + 1} already completed on server, skipping upload`)
-                    return { code: 200, message: 'Slice already uploaded on server' } as EmptyResp
-                  }
-                  
-                  // Re-throw error to let retry mechanism continue
-                  console.log(`🔄 Slice ${idx + 1} needs to be re-uploaded`)
-                } else {
-                  console.log(`✅ ${syncResult.message}`)
-                }
-              } else {
-                console.warn(`❌ Task status sync failed: ${syncResult.error}`)
+    return retryWithBackoff(
+      async () => {
+        try {
+          const slice = chunk.slice(0, chunk.size)
+          const resp: EmptyResp = await r.put("/fs/slice_upload", slice, {
+            headers: {
+              "File-Path": encodeURIComponent(dir),
+              "X-Task-ID": task_id,
+              "X-Slice-Num": idx.toString(),
+              "X-Slice-Hash": slice_hash,
+              Password: password(),
+            },
+            onUploadProgress: async (progressEvent: any) => {
+              if (!progressEvent.lengthComputable || state.isCancelled) {
+                return
               }
-            } catch (syncError) {
-              console.warn('🔧 Error during task status sync:', syncError)
+              //获取锁
+              const release = await progressMutex.acquire()
+              try {
+                const sliceuploaded = progressEvent.loaded - oldLoaded
+                state.uploadedBytes += sliceuploaded
+                oldLoaded = progressEvent.loaded
+
+                // 更新完成的分片数（估算）
+                state.completedChunks = Math.floor(
+                  state.uploadedBytes / (state.totalBytes / state.totalChunks),
+                )
+
+                // 实时进度更新
+                const progress = Math.min(
+                  100,
+                  ((state.uploadedBytes / state.totalBytes) * 100) | 0,
+                )
+                setUpload("progress", progress)
+              } finally {
+                progressMutex.release()
+              }
+            },
+          })
+
+          if (resp.code != 200) {
+            throw new UploadError(
+              UploadErrorType.SERVER_ERROR,
+              `Slice upload failed: ${resp.code} - ${resp.message}`,
+              `分片 ${idx + 1} 上传失败: ${resp.message || "服务器错误"}`,
+              resp.code,
+              resp.code >= 500,
+            )
+          }
+          return resp
+        } catch (err: any) {
+          // 🔍 Smart error detection: server restart / task lost
+          if (err?.response?.status === 400 && taskInfo) {
+            const errorMsg = err?.response?.data?.message || err.message || ""
+            const isTaskNotFound =
+              errorMsg.includes("task") ||
+              errorMsg.includes("TaskID") ||
+              errorMsg.includes("failed get slice upload")
+
+            if (isTaskNotFound) {
+              console.log(
+                `🚨 Task lost detected, starting smart recovery: ${task_id} (slice ${idx + 1})`,
+              )
+
+              try {
+                const syncResult = await TaskSyncManager.handleServerRecovery(
+                  dir,
+                  file.name,
+                  file.size,
+                  taskInfo.hash,
+                  overwrite,
+                  asTask,
+                  task_id,
+                  sliceupstatus,
+                )
+
+                if (syncResult.success) {
+                  if (syncResult.needRestart) {
+                    // Task needs to restart
+                    console.log(`❌ ${syncResult.message}`)
+                    throw new UploadError(
+                      UploadErrorType.SERVER_ERROR,
+                      "Task ID changed, need restart",
+                      syncResult.message ||
+                        "Server task status changed, need to restart upload",
+                      undefined,
+                      false, // Not retryable, need restart
+                    )
+                  } else if (syncResult.needResync) {
+                    // Status synced, update local status and continue retry
+                    sliceupstatus = base64ToUint8Array(
+                      syncResult.serverStatus!.sliceUploadStatus!,
+                    )
+                    console.log(
+                      `✅ ${syncResult.message}, continuing upload slice ${idx + 1}`,
+                    )
+
+                    // Check if current slice is already completed on server
+                    if (isSliceUploaded(sliceupstatus, idx)) {
+                      console.log(
+                        `✅ Slice ${idx + 1} already completed on server, skipping upload`,
+                      )
+                      return {
+                        code: 200,
+                        message: "Slice already uploaded on server",
+                      } as EmptyResp
+                    }
+
+                    // Re-throw error to let retry mechanism continue
+                    console.log(`🔄 Slice ${idx + 1} needs to be re-uploaded`)
+                  } else {
+                    console.log(`✅ ${syncResult.message}`)
+                  }
+                } else {
+                  console.warn(
+                    `❌ Task status sync failed: ${syncResult.error}`,
+                  )
+                }
+              } catch (syncError) {
+                console.warn("🔧 Error during task status sync:", syncError)
+              }
             }
           }
+
+          // Convert to structured error
+          const uploadError =
+            err instanceof UploadError
+              ? err
+              : UploadError.fromAxiosError(err, idx)
+
+          // Record last error
+          state.lastError = uploadError
+
+          console.error(
+            `💥 Slice ${idx + 1} upload failed:`,
+            uploadError.userMessage,
+          )
+          throw uploadError
         }
-        
-        // Convert to structured error
-        const uploadError = err instanceof UploadError 
-          ? err 
-          : UploadError.fromAxiosError(err, idx)
-          
-        // Record last error
-        state.lastError = uploadError
-        
-        console.error(`💥 Slice ${idx + 1} upload failed:`, uploadError.userMessage)
-        throw uploadError
-      }
-    }, RETRY_CONFIG.maxRetries, RETRY_CONFIG.retryDelay, `slice_${idx + 1}_upload`)
+      },
+      RETRY_CONFIG.maxRetries,
+      RETRY_CONFIG.retryDelay,
+      `slice_${idx + 1}_upload`,
+    )
   }
 
   // 进度速度计算
@@ -709,7 +794,10 @@ export const sliceupload = async (
       return
     }
     const speed = intervalLoaded / ((Date.now() - lastTimestamp) / 1000)
-    const complete = Math.min(100, ((state.uploadedBytes / state.totalBytes) * 100) | 0)
+    const complete = Math.min(
+      100,
+      ((state.uploadedBytes / state.totalBytes) * 100) | 0,
+    )
     setUpload("speed", speed)
     setUpload("progress", complete)
     lastTimestamp = Date.now()
@@ -735,14 +823,16 @@ export const sliceupload = async (
       setUpload("speed", 0)
       return err as Error
     }
-    } else {
-      state.uploadedBytes += Math.min(resp1.data.slice_size, state.totalBytes)
-    }  // 后续分片并发上传
+  } else {
+    state.uploadedBytes += Math.min(resp1.data.slice_size, state.totalBytes)
+  } // 后续分片并发上传
   const concurrentLimit = 3 // 固定3个并发
   const { default: pLimit } = await import("p-limit")
   const limit = pLimit(concurrentLimit)
 
-  console.log(`File size: ${(file.size / 1024 / 1024).toFixed(2)}MB, using ${concurrentLimit} concurrent uploads`)
+  console.log(
+    `File size: ${(file.size / 1024 / 1024).toFixed(2)}MB, using ${concurrentLimit} concurrent uploads`,
+  )
 
   const tasks: Promise<void>[] = []
   const errors: Error[] = []
@@ -783,11 +873,17 @@ export const sliceupload = async (
     )
     setUpload("status", "error")
     cleanup()
-    
+
     // 返回最具代表性的错误
-    const serverErrors = errors.filter(e => e instanceof UploadError && e.type === UploadErrorType.SERVER_ERROR)
-    const networkErrors = errors.filter(e => e instanceof UploadError && e.type === UploadErrorType.NETWORK_ERROR)
-    
+    const serverErrors = errors.filter(
+      (e) =>
+        e instanceof UploadError && e.type === UploadErrorType.SERVER_ERROR,
+    )
+    const networkErrors = errors.filter(
+      (e) =>
+        e instanceof UploadError && e.type === UploadErrorType.NETWORK_ERROR,
+    )
+
     if (serverErrors.length > 0) {
       return serverErrors[0]
     } else if (networkErrors.length > 0) {
@@ -799,25 +895,25 @@ export const sliceupload = async (
     if (!asTask) {
       setUpload("status", "backending")
     }
-    
+
     try {
       const resp = await retryWithBackoff(
         () => FsSliceupComplete(dir, resp1.data.task_id),
         RETRY_CONFIG.maxRetries,
         RETRY_CONFIG.retryDelay,
-        'upload_complete'
+        "upload_complete",
       )
-      
+
       completeFlag = true
       cleanup()
-      
+
       if (resp.code != 200) {
         return new UploadError(
           UploadErrorType.SERVER_ERROR,
           `Upload complete failed: ${resp.code} - ${resp.message}`,
           `上传完成确认失败: ${resp.message}`,
           resp.code,
-          resp.code >= 500
+          resp.code >= 500,
         )
       } else if (resp.data.complete == 0) {
         return new UploadError(
@@ -825,17 +921,17 @@ export const sliceupload = async (
           "slice missing, please reupload",
           "文件分片缺失，请重新上传",
           undefined,
-          true
+          true,
         )
       }
-      
+
       //状态处理交给上层
       return
     } catch (error) {
       cleanup()
-      return error instanceof UploadError 
-        ? error 
-        : UploadError.fromGenericError(error, 'upload_complete')
+      return error instanceof UploadError
+        ? error
+        : UploadError.fromGenericError(error, "upload_complete")
     }
   }
 }
@@ -905,17 +1001,23 @@ class UploadQueue {
     return this.uploads.get(uploadPath)
   }
 
-  getAllUploads(): Array<{path: string, state: UploadState}> {
-    return Array.from(this.uploads.entries()).map(([path, state]) => ({path, state}))
+  getAllUploads(): Array<{ path: string; state: UploadState }> {
+    return Array.from(this.uploads.entries()).map(([path, state]) => ({
+      path,
+      state,
+    }))
   }
 }
 
 // 导出队列管理函数
 export const uploadQueue = UploadQueue.getInstance()
 
-export const pauseUpload = (uploadPath: string) => uploadQueue.pauseUpload(uploadPath)
-export const resumeUpload = (uploadPath: string) => uploadQueue.resumeUpload(uploadPath)
-export const cancelUpload = (uploadPath: string) => uploadQueue.cancelUpload(uploadPath)
+export const pauseUpload = (uploadPath: string) =>
+  uploadQueue.pauseUpload(uploadPath)
+export const resumeUpload = (uploadPath: string) =>
+  uploadQueue.resumeUpload(uploadPath)
+export const cancelUpload = (uploadPath: string) =>
+  uploadQueue.cancelUpload(uploadPath)
 
 // 导出错误类型和辅助函数
 export { UploadError, UploadErrorType }
@@ -925,31 +1027,42 @@ export type { UploadProgress }
 export const serverHealthChecker = ServerHealthChecker.getInstance()
 
 // 获取上传详细信息的辅助函数
-export const getUploadDetails = (uploadPath: string): {
-  state?: UploadState,
-  progress?: UploadProgress,
+export const getUploadDetails = (
+  uploadPath: string,
+): {
+  state?: UploadState
+  progress?: UploadProgress
   errorMessage?: string
 } => {
   const state = uploadQueue.getUploadState(uploadPath)
   if (!state) return {}
-  
+
   const progress: UploadProgress = {
     uploadedBytes: state.uploadedBytes,
     totalBytes: state.totalBytes,
-    percentage: Math.min(100, ((state.uploadedBytes / state.totalBytes) * 100) | 0),
+    percentage: Math.min(
+      100,
+      ((state.uploadedBytes / state.totalBytes) * 100) | 0,
+    ),
     speed: state.speed,
-    remainingTime: state.speed > 0 ? (state.totalBytes - state.uploadedBytes) / state.speed : 0,
+    remainingTime:
+      state.speed > 0
+        ? (state.totalBytes - state.uploadedBytes) / state.speed
+        : 0,
     activeChunks: state.activeChunks,
     completedChunks: state.completedChunks,
     totalChunks: state.totalChunks,
     lastError: state.lastError,
-    stage: state.isCancelled ? 'error' : 
-           state.uploadedBytes >= state.totalBytes ? 'completed' : 'uploading'
+    stage: state.isCancelled
+      ? "error"
+      : state.uploadedBytes >= state.totalBytes
+        ? "completed"
+        : "uploading",
   }
-  
+
   return {
     state,
     progress,
-    errorMessage: state.lastError?.userMessage
+    errorMessage: state.lastError?.userMessage,
   }
 }
