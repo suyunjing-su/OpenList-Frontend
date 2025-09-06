@@ -15,16 +15,19 @@ import createMutex from "~/utils/mutex"
 
 // 重试配置
 const RETRY_CONFIG = {
-  maxRetries: 10, // 增加重试次数以应对服务器重启
+  maxRetries: 15, // 增加重试次数以更好应对服务器重启
   retryDelay: 1000, // 基础延迟1秒
   maxDelay: 30000, // 最大延迟30秒
   backoffMultiplier: 2, // 指数退避
-  // 服务器重启检测
-  serverHealthCheckDelay: 5000, // 服务器健康检查延迟
-  serverRestartRetries: 3, // 服务器重启后的特殊重试次数
-  serverRecoveryMaxWait: 120000, // 最大等待服务器恢复时间（2分钟）
+  // 服务器重启检测和恢复
+  serverHealthCheckDelay: 3000, // 服务器健康检查延迟
+  serverRestartRetries: 5, // 服务器重启后的特殊重试次数
+  serverRecoveryMaxWait: 180000, // 最大等待服务器恢复时间（3分钟）
   // 任务状态同步
-  taskSyncRetries: 3, // 任务状态同步重试次数
+  taskSyncRetries: 5, // 任务状态同步重试次数
+  taskSyncDelay: 2000, // 任务同步延迟
+  // 原生分片上传优化
+  nativeSliceRetries: 8, // 原生分片上传额外重试次数
 }
 
 // 服务器状态检测
@@ -101,7 +104,7 @@ class ServerHealthChecker {
       attempt++
     }
     
-    console.error('服务器恢复超时')
+    console.error('Server recovery timeout')
     return false
   }
 }
@@ -145,42 +148,71 @@ class TaskSyncManager {
     currentTaskId: string,
     currentSliceStatus: Uint8Array
   ) {
-    console.log(`检测到服务器重启，正在同步任务状态: ${currentTaskId}`)
+    console.log(`🔄 Server restart detected, syncing task status: ${currentTaskId}`)
     
     for (let attempt = 0; attempt < RETRY_CONFIG.taskSyncRetries; attempt++) {
-      const syncResult = await this.syncTaskStatus(
-        dir, fileName, fileSize, hash, overwrite, asTask, currentTaskId
-      )
-      
-      if (syncResult.success) {
-        const serverSliceStatus = base64ToUint8Array(syncResult.sliceUploadStatus!)
+      try {
+        const syncResult = await this.syncTaskStatus(
+          dir, fileName, fileSize, hash, overwrite, asTask, currentTaskId
+        )
         
-        if (syncResult.isExpectedTask) {
-          // 服务器任务ID匹配，比较状态
-          console.log(`任务状态同步成功，任务ID匹配: ${currentTaskId}`)
-          return {
-            success: true,
-            needResync: !this.compareSliceStatus(currentSliceStatus, serverSliceStatus),
-            serverStatus: syncResult
-          }
-        } else {
-          // 服务器返回了不同的任务ID，可能是新任务
-          console.log(`服务器返回新任务ID: ${syncResult.taskId}，原任务: ${currentTaskId}`)
-          return {
-            success: true,
-            needRestart: true,
-            serverStatus: syncResult
+        if (syncResult.success) {
+          const serverSliceStatus = base64ToUint8Array(syncResult.sliceUploadStatus!)
+          
+          if (syncResult.isExpectedTask) {
+            // Server task ID matches, compare status
+            const statusMatches = this.compareSliceStatus(currentSliceStatus, serverSliceStatus)
+            const serverCompletedSlices = this.countCompletedSlices(serverSliceStatus)
+            const localCompletedSlices = this.countCompletedSlices(currentSliceStatus)
+            
+            console.log(`✅ Task status sync successful - TaskID: ${currentTaskId}`)
+            console.log(`📊 Server completed slices: ${serverCompletedSlices}, local records: ${localCompletedSlices}`)
+            
+            return {
+              success: true,
+              needResync: !statusMatches,
+              serverStatus: syncResult,
+              message: `Task recovery successful, server has completed ${serverCompletedSlices} slices`
+            }
+          } else {
+            // Server returned different task ID, need to restart
+            console.log(`⚠️ Server returned new task ID: ${syncResult.taskId}, original task invalid: ${currentTaskId}`)
+            return {
+              success: true,
+              needRestart: true,
+              serverStatus: syncResult,
+              message: 'Server task has changed, need to restart upload'
+            }
           }
         }
+      } catch (error) {
+        console.warn(`🔄 Task sync attempt ${attempt + 1} failed:`, error)
       }
       
       if (attempt < RETRY_CONFIG.taskSyncRetries - 1) {
-        console.log(`任务同步失败，${2 ** attempt}秒后重试...`)
-        await new Promise(resolve => setTimeout(resolve, 2 ** attempt * 1000))
+        const waitTime = RETRY_CONFIG.taskSyncDelay * (attempt + 1)
+        console.log(`⏳ Retrying task sync in ${waitTime/1000} seconds...`)
+        await new Promise(resolve => setTimeout(resolve, waitTime))
       }
     }
     
-    return { success: false, error: 'Task sync failed after all retries' }
+    return { 
+      success: false, 
+      error: 'Task sync failed after all retries',
+      message: 'Task status sync failed, please restart upload'
+    }
+  }
+  
+  private static countCompletedSlices(sliceStatus: Uint8Array): number {
+    let count = 0
+    for (let i = 0; i < sliceStatus.length * 8; i++) {
+      const byteIndex = Math.floor(i / 8)
+      const bitIndex = i % 8
+      if (byteIndex < sliceStatus.length && (sliceStatus[byteIndex] & (1 << bitIndex)) !== 0) {
+        count++
+      }
+    }
+    return count
   }
   
   private static compareSliceStatus(local: Uint8Array, server: Uint8Array): boolean {
@@ -348,40 +380,40 @@ const retryWithBackoff = async <T>(
         throw lastError
       }
 
-      // 检查是否是服务器相关错误
+      // Check if server-related error
       const isServerError = error instanceof UploadError && 
         (error.type === UploadErrorType.SERVER_ERROR || error.type === UploadErrorType.NETWORK_ERROR)
       
       if (isServerError && error instanceof UploadError) {
-        // 标记服务器可能离线
+        // Mark server as possibly offline
         healthChecker.markServerOffline()
         
-        // 检查服务器状态
+        // Check server status
         const isServerHealthy = await healthChecker.isServerHealthy()
         
         if (!isServerHealthy) {
-          console.log(`服务器似乎离线，等待恢复... (${context}, 重试 ${i + 1}/${maxRetries})`)
+          console.log(`Server appears offline, waiting for recovery... (${context}, retry ${i + 1}/${maxRetries})`)
           
-          // 等待服务器恢复，使用更长的等待时间
+          // Wait for server recovery with longer wait time
           const recovered = await healthChecker.waitForServerRecovery(30000)
           
           if (!recovered) {
-            // 服务器恢复失败，但还有重试机会，继续重试
-            console.warn(`服务器恢复失败，继续重试 (${context})`)
+            // Server recovery failed, but still have retry chances, continue retrying
+            console.warn(`Server recovery failed, continue retrying (${context})`)
           } else {
-            console.log(`服务器已恢复，继续上传 (${context})`)
+            console.log(`Server recovered, continue upload (${context})`)
           }
         }
       }
       
-      // 计算延迟时间，对服务器错误使用更长的延迟
+      // Calculate delay time, use longer delay for server errors
       let waitTime = delay * Math.pow(RETRY_CONFIG.backoffMultiplier, i)
       if (isServerError) {
         waitTime = Math.max(waitTime, RETRY_CONFIG.serverHealthCheckDelay)
       }
       waitTime = Math.min(waitTime, RETRY_CONFIG.maxDelay)
       
-      console.log(`${context} 失败，${waitTime/1000}秒后重试 (${i + 1}/${maxRetries}):`, 
+      console.log(`${context} failed, retrying in ${waitTime/1000} seconds (${i + 1}/${maxRetries}):`, 
         (error as any) instanceof UploadError ? (error as UploadError).userMessage : (error as Error).message)
       
       await new Promise(resolve => setTimeout(resolve, waitTime))
@@ -390,7 +422,7 @@ const retryWithBackoff = async <T>(
   throw lastError!
 }
 
-// 上传状态管理
+// Upload state management
 interface UploadState {
   isPaused: boolean
   isCancelled: boolean
@@ -600,48 +632,66 @@ export const sliceupload = async (
         }
         return resp
       } catch (err: any) {
-        // 检查是否是服务器重启导致的任务不一致
+        // 🔍 Smart error detection: server restart / task lost
         if (err?.response?.status === 400 && taskInfo) {
           const errorMsg = err?.response?.data?.message || err.message || ''
-          if (errorMsg.includes('task') || errorMsg.includes('TaskID') || errorMsg.includes('failed get slice upload')) {
-            console.log(`检测到任务ID不一致，尝试同步任务状态: ${task_id}`)
+          const isTaskNotFound = errorMsg.includes('task') || 
+                                 errorMsg.includes('TaskID') || 
+                                 errorMsg.includes('failed get slice upload')
+          
+          if (isTaskNotFound) {
+            console.log(`🚨 Task lost detected, starting smart recovery: ${task_id} (slice ${idx + 1})`)
             
             try {
               const syncResult = await TaskSyncManager.handleServerRecovery(
                 dir, file.name, file.size, taskInfo.hash, overwrite, asTask, task_id, sliceupstatus
               )
               
-              if (syncResult.success && syncResult.serverStatus) {
+              if (syncResult.success) {
                 if (syncResult.needRestart) {
+                  // Task needs to restart
+                  console.log(`❌ ${syncResult.message}`)
                   throw new UploadError(
                     UploadErrorType.SERVER_ERROR,
                     'Task ID changed, need restart',
-                    '服务器任务状态已变更，需要重新开始上传',
+                    syncResult.message || 'Server task status changed, need to restart upload',
                     undefined,
-                    false // 不可重试，需要重新开始
+                    false // Not retryable, need restart
                   )
                 } else if (syncResult.needResync) {
-                  // 更新本地状态
-                  sliceupstatus = base64ToUint8Array(syncResult.serverStatus.sliceUploadStatus!)
-                  console.log('任务状态已同步，继续上传')
-                  // 重新抛出原始错误，让重试机制处理
+                  // Status synced, update local status and continue retry
+                  sliceupstatus = base64ToUint8Array(syncResult.serverStatus!.sliceUploadStatus!)
+                  console.log(`✅ ${syncResult.message}, continuing upload slice ${idx + 1}`)
+                  
+                  // Check if current slice is already completed on server
+                  if (isSliceUploaded(sliceupstatus, idx)) {
+                    console.log(`✅ Slice ${idx + 1} already completed on server, skipping upload`)
+                    return { code: 200, message: 'Slice already uploaded on server' } as EmptyResp
+                  }
+                  
+                  // Re-throw error to let retry mechanism continue
+                  console.log(`🔄 Slice ${idx + 1} needs to be re-uploaded`)
+                } else {
+                  console.log(`✅ ${syncResult.message}`)
                 }
+              } else {
+                console.warn(`❌ Task status sync failed: ${syncResult.error}`)
               }
             } catch (syncError) {
-              console.warn('任务状态同步失败:', syncError)
+              console.warn('🔧 Error during task status sync:', syncError)
             }
           }
         }
         
-        // 转换为结构化错误
+        // Convert to structured error
         const uploadError = err instanceof UploadError 
           ? err 
           : UploadError.fromAxiosError(err, idx)
           
-        // 记录最后的错误
+        // Record last error
         state.lastError = uploadError
         
-        console.error(`Chunk ${idx + 1} upload failed:`, uploadError.userMessage)
+        console.error(`💥 Slice ${idx + 1} upload failed:`, uploadError.userMessage)
         throw uploadError
       }
     }, RETRY_CONFIG.maxRetries, RETRY_CONFIG.retryDelay, `slice_${idx + 1}_upload`)
