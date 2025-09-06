@@ -18,244 +18,7 @@ const RETRY_CONFIG = {
   retryDelay: 1000,
   maxDelay: 30000,
   backoffMultiplier: 2,
-  serverHealthCheckDelay: 3000,
-  serverRestartRetries: 5,
-  serverRecoveryMaxWait: 180000,
-  taskSyncRetries: 5,
-  taskSyncDelay: 2000,
   nativeSliceRetries: 8,
-}
-
-// 服务器状态检测
-class ServerHealthChecker {
-  private static instance: ServerHealthChecker
-  private lastHealthCheck = 0
-  private serverOnline = true
-  private checkPromise: Promise<boolean> | null = null
-
-  static getInstance(): ServerHealthChecker {
-    if (!ServerHealthChecker.instance) {
-      ServerHealthChecker.instance = new ServerHealthChecker()
-    }
-    return ServerHealthChecker.instance
-  }
-
-  async isServerHealthy(): Promise<boolean> {
-    const now = Date.now()
-
-    // 如果最近检查过且结果为在线，直接返回
-    if (this.serverOnline && now - this.lastHealthCheck < 10000) {
-      return true
-    }
-
-    // 防止并发检查
-    if (this.checkPromise) {
-      return this.checkPromise
-    }
-
-    this.checkPromise = this.performHealthCheck()
-    try {
-      const result = await this.checkPromise
-      this.lastHealthCheck = now
-      this.serverOnline = result
-      return result
-    } finally {
-      this.checkPromise = null
-    }
-  }
-
-  private async performHealthCheck(): Promise<boolean> {
-    try {
-      const response = await r.get("/ping", {
-        timeout: 5000,
-        headers: { Password: password() },
-      })
-      return response.status === 200
-    } catch (error: any) {
-      console.warn("Server health check failed:", error.message)
-      return false
-    }
-  }
-
-  markServerOffline(): void {
-    this.serverOnline = false
-  }
-
-  async waitForServerRecovery(maxWaitTime = 60000): Promise<boolean> {
-    const startTime = Date.now()
-    let attempt = 1
-
-    console.log("等待服务器恢复...")
-
-    while (Date.now() - startTime < maxWaitTime) {
-      const isHealthy = await this.isServerHealthy()
-      if (isHealthy) {
-        console.log(`服务器已恢复 (第${attempt}次检查)`)
-        return true
-      }
-
-      const waitTime = Math.min(5000 * attempt, 15000) // 渐进式等待
-      console.log(`服务器检查失败，${waitTime / 1000}秒后重试...`)
-      await new Promise((resolve) => setTimeout(resolve, waitTime))
-      attempt++
-    }
-
-    console.error("Server recovery timeout")
-    return false
-  }
-}
-
-// 任务状态同步器
-class TaskSyncManager {
-  private static async syncTaskStatus(
-    dir: string,
-    fileName: string,
-    fileSize: number,
-    hash: any,
-    overwrite: boolean,
-    asTask: boolean,
-    expectedTaskId?: string,
-  ) {
-    try {
-      const resp = await fsPreup(
-        dir,
-        fileName,
-        fileSize,
-        hash,
-        overwrite,
-        asTask,
-      )
-      if (resp.code === 200) {
-        return {
-          success: true,
-          taskId: resp.data.task_id,
-          sliceSize: resp.data.slice_size,
-          sliceCnt: resp.data.slice_cnt,
-          sliceUploadStatus: resp.data.slice_upload_status,
-          isExpectedTask:
-            !expectedTaskId || resp.data.task_id === expectedTaskId,
-        }
-      }
-      return {
-        success: false,
-        error: `Sync failed: ${resp.code} - ${resp.message}`,
-      }
-    } catch (error) {
-      return { success: false, error: `Sync error: ${error}` }
-    }
-  }
-
-  static async handleServerRecovery(
-    dir: string,
-    fileName: string,
-    fileSize: number,
-    hash: any,
-    overwrite: boolean,
-    asTask: boolean,
-    currentTaskId: string,
-    currentSliceStatus: Uint8Array,
-  ) {
-    console.log(
-      `Server restart detected, syncing task status: ${currentTaskId}`,
-    )
-
-    for (let attempt = 0; attempt < RETRY_CONFIG.taskSyncRetries; attempt++) {
-      try {
-        const syncResult = await this.syncTaskStatus(
-          dir,
-          fileName,
-          fileSize,
-          hash,
-          overwrite,
-          asTask,
-          currentTaskId,
-        )
-
-        if (syncResult.success) {
-          const serverSliceStatus = base64ToUint8Array(
-            syncResult.sliceUploadStatus!,
-          )
-
-          if (syncResult.isExpectedTask) {
-            // Server task ID matches, compare status
-            const statusMatches = this.compareSliceStatus(
-              currentSliceStatus,
-              serverSliceStatus,
-            )
-            const serverCompletedSlices =
-              this.countCompletedSlices(serverSliceStatus)
-            const localCompletedSlices =
-              this.countCompletedSlices(currentSliceStatus)
-
-            console.log(
-              `Task status sync successful - TaskID: ${currentTaskId}`,
-            )
-            console.log(
-              `Server completed slices: ${serverCompletedSlices}, local records: ${localCompletedSlices}`,
-            )
-
-            return {
-              success: true,
-              needResync: !statusMatches,
-              serverStatus: syncResult,
-              message: `Task recovery successful, server has completed ${serverCompletedSlices} slices`,
-            }
-          } else {
-            // Server returned different task ID, need to restart
-            console.log(
-              `⚠️ Server returned new task ID: ${syncResult.taskId}, original task invalid: ${currentTaskId}`,
-            )
-            return {
-              success: true,
-              needRestart: true,
-              serverStatus: syncResult,
-              message: "Server task has changed, need to restart upload",
-            }
-          }
-        }
-      } catch (error) {
-        console.warn(`🔄 Task sync attempt ${attempt + 1} failed:`, error)
-      }
-
-      if (attempt < RETRY_CONFIG.taskSyncRetries - 1) {
-        const waitTime = RETRY_CONFIG.taskSyncDelay * (attempt + 1)
-        console.log(`⏳ Retrying task sync in ${waitTime / 1000} seconds...`)
-        await new Promise((resolve) => setTimeout(resolve, waitTime))
-      }
-    }
-
-    return {
-      success: false,
-      error: "Task sync failed after all retries",
-      message: "Task status sync failed, please restart upload",
-    }
-  }
-
-  private static countCompletedSlices(sliceStatus: Uint8Array): number {
-    let count = 0
-    for (let i = 0; i < sliceStatus.length * 8; i++) {
-      const byteIndex = Math.floor(i / 8)
-      const bitIndex = i % 8
-      if (
-        byteIndex < sliceStatus.length &&
-        (sliceStatus[byteIndex] & (1 << bitIndex)) !== 0
-      ) {
-        count++
-      }
-    }
-    return count
-  }
-
-  private static compareSliceStatus(
-    local: Uint8Array,
-    server: Uint8Array,
-  ): boolean {
-    if (local.length !== server.length) return false
-    for (let i = 0; i < local.length; i++) {
-      if (local[i] !== server[i]) return false
-    }
-    return true
-  }
 }
 
 // 错误类型定义
@@ -400,14 +163,13 @@ interface UploadProgress {
 
 const progressMutex = createMutex()
 
-// 智能重试函数，支持服务器重启检测
+// 标准重试函数
 const retryWithBackoff = async <T>(
   fn: () => Promise<T>,
   maxRetries: number = RETRY_CONFIG.maxRetries,
   delay: number = RETRY_CONFIG.retryDelay,
   context: string = "operation",
 ): Promise<T> => {
-  const healthChecker = ServerHealthChecker.getInstance()
   let lastError: Error
 
   for (let i = 0; i <= maxRetries; i++) {
@@ -420,32 +182,11 @@ const retryWithBackoff = async <T>(
         throw lastError
       }
 
-      const isServerError =
-        error instanceof UploadError &&
-        (error.type === UploadErrorType.SERVER_ERROR ||
-          error.type === UploadErrorType.NETWORK_ERROR)
-
-      if (isServerError && error instanceof UploadError) {
-        healthChecker.markServerOffline()
-        const isServerHealthy = await healthChecker.isServerHealthy()
-
-        if (!isServerHealthy) {
-          console.log(`Server offline, waiting for recovery... (${context}, retry ${i + 1}/${maxRetries})`)
-          const recovered = await healthChecker.waitForServerRecovery(30000)
-          if (!recovered) {
-            console.warn(`Server recovery failed, continue retrying (${context})`)
-          } else {
-            console.log(`Server recovered, continue upload (${context})`)
-          }
-        }
-      }
-
-      // Calculate delay time, use longer delay for server errors
-      let waitTime = delay * Math.pow(RETRY_CONFIG.backoffMultiplier, i)
-      if (isServerError) {
-        waitTime = Math.max(waitTime, RETRY_CONFIG.serverHealthCheckDelay)
-      }
-      waitTime = Math.min(waitTime, RETRY_CONFIG.maxDelay)
+      // Calculate delay time with exponential backoff
+      const waitTime = Math.min(
+        delay * Math.pow(RETRY_CONFIG.backoffMultiplier, i),
+        RETRY_CONFIG.maxDelay,
+      )
 
       console.log(
         `${context} failed, retrying in ${waitTime / 1000} seconds (${i + 1}/${maxRetries}):`,
@@ -669,79 +410,6 @@ export const SliceUpload: Upload = async (
           }
           return resp
         } catch (err: any) {
-          // 🔍 Smart error detection: server restart / task lost
-          if (err?.response?.status === 400 && taskInfo) {
-            const errorMsg = err?.response?.data?.message || err.message || ""
-            const isTaskNotFound =
-              errorMsg.includes("task") ||
-              errorMsg.includes("TaskID") ||
-              errorMsg.includes("failed get slice upload")
-
-            if (isTaskNotFound) {
-              console.log(
-                `Task lost detected, starting smart recovery: ${task_id} (slice ${idx + 1})`,
-              )
-
-              try {
-                const syncResult = await TaskSyncManager.handleServerRecovery(
-                  dir,
-                  file.name,
-                  file.size,
-                  taskInfo.hash,
-                  overwrite,
-                  asTask,
-                  task_id,
-                  sliceupstatus,
-                )
-
-                if (syncResult.success) {
-                  if (syncResult.needRestart) {
-                    // Task needs to restart
-                    console.log(`❌ ${syncResult.message}`)
-                    throw new UploadError(
-                      UploadErrorType.SERVER_ERROR,
-                      "Task ID changed, need restart",
-                      syncResult.message ||
-                        "Server task status changed, need to restart upload",
-                      undefined,
-                      false, // Not retryable, need restart
-                    )
-                  } else if (syncResult.needResync) {
-                    // Status synced, update local status and continue retry
-                    sliceupstatus = base64ToUint8Array(
-                      syncResult.serverStatus!.sliceUploadStatus!,
-                    )
-                    console.log(
-                      `${syncResult.message}, continuing upload slice ${idx + 1}`,
-                    )
-
-                    // Check if current slice is already completed on server
-                    if (isSliceUploaded(sliceupstatus, idx)) {
-                      console.log(
-                        `Slice ${idx + 1} already completed on server, skipping upload`,
-                      )
-                      return {
-                        code: 200,
-                        message: "Slice already uploaded on server",
-                      } as EmptyResp
-                    }
-
-                    // Re-throw error to let retry mechanism continue
-                    console.log(`Slice ${idx + 1} needs to be re-uploaded`)
-                  } else {
-                    console.log(syncResult.message)
-                  }
-                } else {
-                  console.warn(
-                    `❌ Task status sync failed: ${syncResult.error}`,
-                  )
-                }
-              } catch (syncError) {
-                console.warn("🔧 Error during task status sync:", syncError)
-              }
-            }
-          }
-
           // Convert to structured error
           const uploadError =
             err instanceof UploadError
@@ -1014,9 +682,6 @@ export const cancelUpload = (uploadPath: string) =>
 // 导出错误类型和辅助函数
 export { UploadError, UploadErrorType }
 export type { UploadProgress }
-
-// 导出服务器健康检查器
-export const serverHealthChecker = ServerHealthChecker.getInstance()
 
 // 获取上传详细信息的辅助函数
 export const getUploadDetails = (
