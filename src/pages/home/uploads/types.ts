@@ -24,7 +24,6 @@ export type Upload = (
   asTask: boolean,
   overwrite: boolean,
   rapid: boolean,
-  sliceup: boolean,
 ) => Promise<Error | undefined>
 
 export type HashInfo = {

@@ -78,7 +78,6 @@ const Upload = () => {
   const [uploading, setUploading] = createSignal(false)
   const [asTask, setAsTask] = createSignal(false)
   const [overwrite, setOverwrite] = createSignal(false)
-  const [sliceup, setSliceup] = createSignal(false)
   const [rapid, setRapid] = createSignal(true)
   const [uploadFiles, setUploadFiles] = createStore<{
     uploads: UploadFileProps[]
@@ -123,7 +122,6 @@ const Upload = () => {
         asTask(),
         overwrite(),
         rapid(),
-        sliceup(),
       )
       if (!err) {
         setUpload(path, "status", asTask() ? "tasked" : "success")
@@ -307,14 +305,6 @@ const Upload = () => {
               >
                 {t("home.upload.add_as_task")}
               </Checkbox>
-              <Checkbox
-                checked={sliceup()}
-                onChange={() => {
-                  setSliceup(!sliceup())
-                }}
-              >
-                {t("home.upload.slice_upload")}
-              </Checkbox>
 
               <Checkbox
                 checked={overwrite()}
@@ -324,14 +314,16 @@ const Upload = () => {
               >
                 {t("home.conflict_policy.overwrite_existing")}
               </Checkbox>
-              <Checkbox
-                checked={rapid()}
-                onChange={() => {
-                  setRapid(!rapid())
-                }}
-              >
-                {t("home.upload.try_rapid")}
-              </Checkbox>
+              <Show when={curUploader().name !== "Slice"}>
+                <Checkbox
+                  checked={rapid()}
+                  onChange={() => {
+                    setRapid(!rapid())
+                  }}
+                >
+                  {t("home.upload.try_rapid")}
+                </Checkbox>
+              </Show>
             </Stack>
           </Show>
         </VStack>

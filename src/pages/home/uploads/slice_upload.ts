@@ -474,13 +474,12 @@ interface UploadState {
   onProgress?: (progress: UploadProgress) => void
 }
 
-export const sliceupload = async (
+export const SliceUpload: Upload = async (
   uploadPath: string,
   file: File,
   setUpload: SetUpload,
-  overwrite = false,
   asTask = false,
-  uploadState?: UploadState,
+  overwrite = false,
 ): Promise<Error | undefined> => {
   let hashtype: string = HashType.Md5
   let slicehash: string[] = []
@@ -496,7 +495,7 @@ export const sliceupload = async (
   } | null = null
 
   // 初始化上传状态
-  const state: UploadState = uploadState || {
+  const state: UploadState = {
     isPaused: false,
     isCancelled: false,
     totalBytes: file.size,
