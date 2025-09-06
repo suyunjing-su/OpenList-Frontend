@@ -14,19 +14,16 @@ import createMutex from "~/utils/mutex"
 
 // 重试配置
 const RETRY_CONFIG = {
-  maxRetries: 15, // 增加重试次数以更好应对服务器重启
-  retryDelay: 1000, // 基础延迟1秒
-  maxDelay: 30000, // 最大延迟30秒
-  backoffMultiplier: 2, // 指数退避
-  // 服务器重启检测和恢复
-  serverHealthCheckDelay: 3000, // 服务器健康检查延迟
-  serverRestartRetries: 5, // 服务器重启后的特殊重试次数
-  serverRecoveryMaxWait: 180000, // 最大等待服务器恢复时间（3分钟）
-  // 任务状态同步
-  taskSyncRetries: 5, // 任务状态同步重试次数
-  taskSyncDelay: 2000, // 任务同步延迟
-  // 原生分片上传优化
-  nativeSliceRetries: 8, // 原生分片上传额外重试次数
+  maxRetries: 15,
+  retryDelay: 1000,
+  maxDelay: 30000,
+  backoffMultiplier: 2,
+  serverHealthCheckDelay: 3000,
+  serverRestartRetries: 5,
+  serverRecoveryMaxWait: 180000,
+  taskSyncRetries: 5,
+  taskSyncDelay: 2000,
+  nativeSliceRetries: 8,
 }
 
 // 服务器状态检测
@@ -159,7 +156,7 @@ class TaskSyncManager {
     currentSliceStatus: Uint8Array,
   ) {
     console.log(
-      `🔄 Server restart detected, syncing task status: ${currentTaskId}`,
+      `Server restart detected, syncing task status: ${currentTaskId}`,
     )
 
     for (let attempt = 0; attempt < RETRY_CONFIG.taskSyncRetries; attempt++) {
@@ -191,10 +188,10 @@ class TaskSyncManager {
               this.countCompletedSlices(currentSliceStatus)
 
             console.log(
-              `✅ Task status sync successful - TaskID: ${currentTaskId}`,
+              `Task status sync successful - TaskID: ${currentTaskId}`,
             )
             console.log(
-              `📊 Server completed slices: ${serverCompletedSlices}, local records: ${localCompletedSlices}`,
+              `Server completed slices: ${serverCompletedSlices}, local records: ${localCompletedSlices}`,
             )
 
             return {
@@ -419,37 +416,24 @@ const retryWithBackoff = async <T>(
     } catch (error) {
       lastError = error as Error
 
-      // 如果是最后一次重试，直接抛出错误
       if (i === maxRetries) {
         throw lastError
       }
 
-      // Check if server-related error
       const isServerError =
         error instanceof UploadError &&
         (error.type === UploadErrorType.SERVER_ERROR ||
           error.type === UploadErrorType.NETWORK_ERROR)
 
       if (isServerError && error instanceof UploadError) {
-        // Mark server as possibly offline
         healthChecker.markServerOffline()
-
-        // Check server status
         const isServerHealthy = await healthChecker.isServerHealthy()
 
         if (!isServerHealthy) {
-          console.log(
-            `Server appears offline, waiting for recovery... (${context}, retry ${i + 1}/${maxRetries})`,
-          )
-
-          // Wait for server recovery with longer wait time
+          console.log(`Server offline, waiting for recovery... (${context}, retry ${i + 1}/${maxRetries})`)
           const recovered = await healthChecker.waitForServerRecovery(30000)
-
           if (!recovered) {
-            // Server recovery failed, but still have retry chances, continue retrying
-            console.warn(
-              `Server recovery failed, continue retrying (${context})`,
-            )
+            console.warn(`Server recovery failed, continue retrying (${context})`)
           } else {
             console.log(`Server recovered, continue upload (${context})`)
           }
@@ -696,7 +680,7 @@ export const sliceupload = async (
 
             if (isTaskNotFound) {
               console.log(
-                `🚨 Task lost detected, starting smart recovery: ${task_id} (slice ${idx + 1})`,
+                `Task lost detected, starting smart recovery: ${task_id} (slice ${idx + 1})`,
               )
 
               try {
@@ -729,13 +713,13 @@ export const sliceupload = async (
                       syncResult.serverStatus!.sliceUploadStatus!,
                     )
                     console.log(
-                      `✅ ${syncResult.message}, continuing upload slice ${idx + 1}`,
+                      `${syncResult.message}, continuing upload slice ${idx + 1}`,
                     )
 
                     // Check if current slice is already completed on server
                     if (isSliceUploaded(sliceupstatus, idx)) {
                       console.log(
-                        `✅ Slice ${idx + 1} already completed on server, skipping upload`,
+                        `Slice ${idx + 1} already completed on server, skipping upload`,
                       )
                       return {
                         code: 200,
@@ -744,9 +728,9 @@ export const sliceupload = async (
                     }
 
                     // Re-throw error to let retry mechanism continue
-                    console.log(`🔄 Slice ${idx + 1} needs to be re-uploaded`)
+                    console.log(`Slice ${idx + 1} needs to be re-uploaded`)
                   } else {
-                    console.log(`✅ ${syncResult.message}`)
+                    console.log(syncResult.message)
                   }
                 } else {
                   console.warn(
@@ -825,44 +809,53 @@ export const sliceupload = async (
     }
   } else {
     state.uploadedBytes += Math.min(resp1.data.slice_size, state.totalBytes)
-  } // 后续分片并发上传
-  const concurrentLimit = 3 // 固定3个并发
-  const { default: pLimit } = await import("p-limit")
-  const limit = pLimit(concurrentLimit)
+  }
 
+  // 后续分片并发上传
+  const concurrentLimit = 3 // 固定3个并发
   console.log(
     `File size: ${(file.size / 1024 / 1024).toFixed(2)}MB, using ${concurrentLimit} concurrent uploads`,
   )
 
-  const tasks: Promise<void>[] = []
-  const errors: Error[] = []
+  // 原生并发控制实现
+  const pendingSlices: number[] = []
   for (let i = 1; i < resp1.data.slice_cnt; i++) {
     if (!isSliceUploaded(sliceupstatus, i)) {
-      const chunk = file.slice(
-        i * resp1.data.slice_size,
-        (i + 1) * resp1.data.slice_size,
-      )
-      tasks.push(
-        limit(async () => {
-          try {
-            await uploadChunk(
-              chunk,
-              i,
-              slicehash.length == 0 ? "" : slicehash[i],
-              resp1.data.task_id,
-            )
-          } catch (err) {
-            errors.push(err as Error)
-          }
-        }),
-      )
-    } else {
-      state.uploadedBytes += Math.min(
-        resp1.data.slice_size,
-        state.totalBytes - i * resp1.data.slice_size,
-      )
+      pendingSlices.push(i)
     }
   }
+
+  const errors: Error[] = []
+  let currentIndex = 0
+
+  // 并发处理函数
+  const processNextSlice = async (): Promise<void> => {
+    while (currentIndex < pendingSlices.length) {
+      const sliceIndex = pendingSlices[currentIndex++]
+      
+      try {
+        const chunk = file.slice(
+          sliceIndex * resp1.data.slice_size,
+          (sliceIndex + 1) * resp1.data.slice_size,
+        )
+        await uploadChunk(
+          chunk,
+          sliceIndex,
+          slicehash.length == 0 ? "" : slicehash[sliceIndex],
+          resp1.data.task_id,
+        )
+      } catch (err) {
+        errors.push(err as Error)
+      }
+    }
+  }
+
+  // 启动并发任务
+  const tasks: Promise<void>[] = []
+  for (let i = 0; i < Math.min(concurrentLimit, pendingSlices.length); i++) {
+    tasks.push(processNextSlice())
+  }
+
   await Promise.all(tasks)
 
   // 最终处理上传结果
