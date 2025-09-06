@@ -634,23 +634,18 @@ export const sliceupload = async (
     while (state.isPaused && !state.isCancelled) {
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
-
-    const formData = new FormData()
-    formData.append("task_id", task_id)
-    formData.append("slice_hash", slice_hash)
-    formData.append("slice_num", idx.toString())
-    formData.append("slice", chunk)
-
-    let oldTimestamp = Date.now()
     let oldLoaded = 0
 
     return retryWithBackoff(
       async () => {
         try {
-          const resp: EmptyResp = await r.post("/fs/slice_upload", formData, {
+          const slice = chunk.slice(0, chunk.size)
+          const resp: EmptyResp = await r.put("/fs/slice_upload", slice, {
             headers: {
               "File-Path": encodeURIComponent(dir),
-              "Content-Type": "multipart/form-data",
+              "X-Task-ID": task_id,
+              "X-Slice-Num": idx.toString(),
+              "X-Slice-Hash": slice_hash,
               Password: password(),
             },
             onUploadProgress: async (progressEvent: any) => {
