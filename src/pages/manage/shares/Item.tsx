@@ -12,7 +12,7 @@ import {
   Textarea,
 } from "@hope-ui/solid"
 import { Match, Show, Switch } from "solid-js"
-import { SelectOptions } from "~/components"
+import { SelectOptions, MultiPathInput } from "~/components"
 import { TbRefresh } from "solid-icons/tb"
 
 export type ItemProps = {
@@ -23,6 +23,7 @@ export type ItemProps = {
   options?: string
   options_prefix?: string
   valid?: boolean
+  placeholder?: string
 } & (
   | {
       type: Type.Bool
@@ -44,6 +45,11 @@ export type ItemProps = {
       onChange?: (value: string) => void
       value: string
       random?: () => string
+    }
+  | {
+      type: Type.MultiPath
+      onChange?: (value: string) => void
+      value: string
     }
   | {
       type: Type.Select
@@ -74,6 +80,7 @@ const Item = (props: ItemProps) => {
               readOnly={props.readonly}
               value={props.value as string}
               invalid={!props.valid}
+              placeholder={props.placeholder}
               onChange={
                 props.type === Type.String
                   ? (e) => props.onChange?.(e.currentTarget.value)
@@ -101,6 +108,7 @@ const Item = (props: ItemProps) => {
             readOnly={props.readonly}
             value={props.value as number}
             invalid={!props.valid}
+            placeholder={props.placeholder}
             onInput={
               props.type === Type.Number
                 ? (e) => props.onChange?.(parseInt(e.currentTarget.value))
@@ -115,6 +123,7 @@ const Item = (props: ItemProps) => {
             readOnly={props.readonly}
             value={props.value as number}
             invalid={!props.valid}
+            placeholder={props.placeholder}
             onInput={
               props.type === Type.Float
                 ? (e) => props.onChange?.(parseFloat(e.currentTarget.value))
@@ -141,11 +150,25 @@ const Item = (props: ItemProps) => {
             readOnly={props.readonly}
             value={props.value as string}
             invalid={!props.valid}
+            placeholder={props.placeholder}
             onChange={
               props.type === Type.Text
                 ? (e) => props.onChange?.(e.currentTarget.value)
                 : undefined
             }
+          />
+        </Match>
+        <Match when={props.type === Type.MultiPath}>
+          <MultiPathInput
+            id={props.name}
+            value={props.value as string}
+            valid={props.valid}
+            readOnly={props.readonly}
+            onChange={(value) => {
+              if (props.type === Type.MultiPath) {
+                props.onChange?.(value)
+              }
+            }}
           />
         </Match>
         <Match when={props.type === Type.Select}>

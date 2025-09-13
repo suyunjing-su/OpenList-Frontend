@@ -1,19 +1,19 @@
 {
-  "name": "@openlist-frontend/openlist-frontend",
-  "version": "4.1.1",
+  "name": "opltfr",
+  "version": "4.1.2",
   "type": "module",
   "author": {
-    "name": "The OpenList Projects Contributors",
-    "url": "https://github.com/OpenListTeam"
+    "name": "suyunjing-su",
+    "url": "https://github.com/suyunjing-su"
   },
-  "description": "A new AList Fork to Anti Trust Crisis",
+  "description": "oplist test",
   "packageManager": "pnpm@9.15.9",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OpenListTeam/OpenList-Frontend.git"
+    "url": "git+https://github.com/suyunjing-su/OpenList-Frontend.git"
   },
   "bugs": {
-    "url": "https://github.com/OpenListTeam/OpenList/issues"
+    "url": "https://github.com/suyunjing-su/OpenList/issues"
   },
   "files": [
     "dist"
