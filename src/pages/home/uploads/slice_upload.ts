@@ -471,7 +471,7 @@ export const SliceUpload: Upload = async (
   const processNextSlice = async (): Promise<void> => {
     while (currentIndex < pendingSlices.length) {
       const sliceIndex = pendingSlices[currentIndex++]
-      
+
       try {
         const chunk = file.slice(
           sliceIndex * resp1.data.slice_size,
